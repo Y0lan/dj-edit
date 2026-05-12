@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2] — 2026-05-12
+
+fix doctor false-positive + brew formula /Applications crash
+
+### Changed
+- (auto-generated — edit before publishing if needed)
+
+
 All notable changes to dj-edit are documented here.
 
 ## [0.1.1] — 2026-05-12
