@@ -314,10 +314,11 @@ PY
         check "venv soundfile" "[ -x \"$VENV_PY\" ] && \"$VENV_PY\" -c \"import soundfile\""
         echo ""
         echo "[doctor] ffmpeg features:"
+        # Use awk to match filter name in column 2 — robust across ffmpeg versions
+        # (the leading-whitespace + flags column varies: '..', '.S', 'T.', 'TS', etc.)
         FILTERS_LIST=$(ffmpeg -hide_banner -filters 2>/dev/null)
         for f in v360 sendcmd loudnorm drawtext tblend signalstats zoompan; do
-            # ffmpeg -filters format: ` .. <name>  <io_signature>  <description>`
-            if echo "$FILTERS_LIST" | grep -qE "^ ?[.TS]+ +$f +" ; then
+            if printf '%s\n' "$FILTERS_LIST" | awk -v f="$f" '$2 == f { found=1 } END { exit !found }' ; then
                 echo "  ✓ filter: $f"
             else
                 echo "  ✗ filter: $f  (ffmpeg compiled without this — re-install with full features)"
@@ -327,10 +328,9 @@ PY
         echo ""
         echo "[doctor] ffmpeg encoders:"
         ENC_LIST=$(ffmpeg -hide_banner -encoders 2>/dev/null)
-        # Encoders: ` V....D <name>  <description>`
         any_enc=0
         for enc in h264_videotoolbox h264_vaapi libx264; do
-            if echo "$ENC_LIST" | grep -qE "^ ?V[.FXSBD]+ +$enc +"; then
+            if printf '%s\n' "$ENC_LIST" | awk -v e="$enc" '$2 == e { found=1 } END { exit !found }' ; then
                 echo "  ✓ encoder: $enc"
                 any_enc=1
             else
