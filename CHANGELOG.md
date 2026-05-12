@@ -1,14 +1,84 @@
 # Changelog
 
+All notable changes to dj-edit are documented here.
+
 ## [0.2.0] — 2026-05-12
 
-Tier A eased moves + Tier B music-driven moves + Tier D move pools (with codex-loop hardening)
+The Insta360 movement upgrade. v0.1.x reframed via static stock moves (orbit at
+constant speed, dolly-zoom linear); v0.2 makes camera motion cinematic and
+music-aware.
 
-### Changed
-- (auto-generated — edit before publishing if needed)
+### Added — Tier A: eased motion primitives
 
+Every move (`orbit`, `tilt_reveal`, `dolly_zoom`, `crowd_reveal`) now uses
+cosine ease-in-out instead of linear ramps. Two new combined-motion primitives:
+- **`counter_motion`**: yaw turns one direction while pitch oscillates and h_fov
+  breathes. Three orthogonal motions from one cheap source.
+- **`dolly_with_drift`**: push-in plus slow yaw drift. Subject-lock effect.
 
-All notable changes to dj-edit are documented here.
+### Added — Tier B: music-driven moves
+
+- **`bpm_sync_orbit`**: yaw rotates exactly N bars per full turn, BPM-locked.
+- **`kick_pulse_fov`**: h_fov pumps at BPM frequency for subliminal beat sync.
+- **`drop_impact`**: 4-phase preset (freeze → whip → dolly-zoom → hold) for
+  the moment of impact.
+- **`build_tension`**: quadratic-ease h_fov tightening into the drop.
+- **`breakdown_drift`**: ultra-slow yaw + slow pitch tilt for breakdowns.
+
+### Added — Tier D: stochastic move pools
+
+- **`lib/selector.pick_move_for_event`**: weighted RNG pick, intensity-biased,
+  with 3-pick avoid-repeat window. Same set rendered twice → different cuts.
+- **`presets/styles/{aggressive,clean,signature}.json`**: weight overrides.
+  `aggressive` ships drop_impact every drop + whip-pans dominating; `clean` is
+  cinematic and slow; `signature` is the balanced default.
+- **`presets/references/{anyma,fisher,rinse}.json`**: artist-style packs.
+- `--style`, `--reference`, `--seed` CLI flags on `dj-edit edl`.
+
+### Fixed — codex round 1 + 2 (CRITICAL)
+
+- **`TI` is normalized [0,1] in sendcmd, NOT seconds.** Rewrote every move's
+  math to use `T` (absolute seconds) instead of bare `TI`. The v0.1 expressions
+  like `45*TI` meant "45 degrees TOTAL" — not "45 deg/sec" as designed.
+- **Commas inside sendcmd expressions break parsing** (verified in ffmpeg
+  n8.1.1). Replaced piecewise `if(lt(x,a),b,c)` with multi-line time-windowed
+  commands (each command on its own line, no nested if). Replaced `pow(T,2)`
+  with `T*T`.
+- **Render cache only hashed EDL JSON, not cmd file contents.** Tweaking a
+  move generator while EDL JSON stayed byte-identical → cache served stale
+  video. Now hashes EDL plus every referenced `.cmd` file's content.
+- **`_generate_move_cmd` returned a relative cmd path.** Broke when `render.sh`
+  was invoked from a different cwd. Now returns `.resolve()` absolute path.
+- **`target_yaw or 60.0`** made explicit `target_yaw=0.0` impossible. Now uses
+  `target_yaw is None` check.
+- **`load_pool_overrides` silently fell back to defaults on `--style typo`.**
+  Now warns to stderr (with the resolved file path) for missing pack files,
+  malformed JSON, or pack entries referencing unknown move names.
+- **Intensity not clamped.** Negative or >1 event intensities could produce
+  zero or negative weights in pool selection. Clamped to [0, 1].
+
+### Added — Tests + CI hardening
+
+- **131 pytest tests** (up from 41 in v0.1.x). Includes:
+  - 21 lib/moves invariant tests (`no-pow`, `no-if`, `no-commas`, `uses-T`)
+  - 14 selector pool-selection tests (weight bias, avoid-repeat, packs load)
+  - **60 shipped-preset hygiene tests** (12 presets × 5 invariants) — this
+    test set automatically catches the codex round 1 regression class (where
+    presets weren't regenerated after a lib rewrite).
+- Full quickstart `--demo` end-to-end smoke verified: drop detected, set_9x16
+  + set_16x9 + highlight + per-drop clip all produced in ~8 seconds.
+
+### Verified end-to-end
+
+All 12 generated `.cmd` files render through real ffmpeg n8.1.1 sendcmd (orbit,
+drop-impact, build-tension, kick-pulse-fov tested with rgbtestsrc input;
+frames at t=0 and t=1s have different md5sums → motion confirmed).
+
+### Upgrade
+
+```
+brew upgrade dj-edit
+```
 
 ## [0.1.3] — 2026-05-12
 
