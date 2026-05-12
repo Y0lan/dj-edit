@@ -57,6 +57,7 @@ def correlate_window(master_env: np.ndarray, cam_env: np.ndarray,
 
 def robust_offset(points: list[tuple[float, float, float]],
                   master_dur: float,
+                  cam_dur: float | None = None,
                   inlier_thresh_s: float = 5.0) -> tuple[float, float, int]:
     """Find the constant offset b such that master_t = cam_t + b.
 
@@ -65,16 +66,23 @@ def robust_offset(points: list[tuple[float, float, float]],
     because lag_s is the master_t where cam_local_t=0 (== window_start) aligns.
 
     Median of offset_b_i is robust to spurious correlation peaks (repeated 4-bar
-    musical patterns producing matches at wrong locations)."""
+    musical patterns producing matches at wrong locations).
+
+    If cam_dur is given, offsets that would put the camera's coverage past the
+    master's end are excluded — these come from cross-correlation hitting the
+    master-end clipping ceiling.
+    """
     if not points:
         return 1.0, 0.0, 0
     arr = np.array(points)
     cam_starts = arr[:, 0]
     lags = arr[:, 1]
-    # Each window contributes one offset estimate
     offsets = lags - cam_starts
-    # Drop offsets that would put cam coverage entirely outside master_dur
-    plausible = (offsets > -60) & (offsets < master_dur)
+    # Plausibility: offset must place cam coverage within master_dur (with slack)
+    if cam_dur is not None:
+        plausible = (offsets > -60) & (offsets + cam_dur < master_dur + 60)
+    else:
+        plausible = (offsets > -60) & (offsets < master_dur)
     if plausible.sum() >= 3:
         offsets = offsets[plausible]
     b = float(np.median(offsets))
@@ -121,7 +129,7 @@ def sync_camera(cam_path: Path, master_env: np.ndarray, master_dur: float,
               f"the master audio's time range.", file=sys.stderr)
         return None
 
-    a, b, inliers = robust_offset(points, master_dur)
+    a, b, inliers = robust_offset(points, master_dur, cam_dur=cam_dur)
     if inliers < 2:
         print(f"    WARN: {cam_path.name} sync has only {inliers} inliers across "
               f"{len(points)} windows — alignment unreliable. Affine map "

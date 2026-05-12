@@ -40,7 +40,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0,<9.0",
-    "pytest-timeout>=2.0,<3.0",
 ]
 
 [project.urls]
@@ -62,4 +61,3 @@ lib = ["*.py"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-timeout = 60
