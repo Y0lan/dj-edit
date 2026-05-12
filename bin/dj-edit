@@ -1,0 +1,372 @@
+#!/usr/bin/env bash
+# dj-edit — dispatcher for DJ-set auto-edit pipeline.
+set -euo pipefail
+
+# Portable realpath (BSD readlink lacks -f)
+_realpath() {
+    python3 -c "import os,sys;print(os.path.realpath(sys.argv[1]))" "$1"
+}
+
+DJ_EDIT_ROOT="$(dirname "$(_realpath "$0")")/.."
+DJ_EDIT_ROOT="$(_realpath "$DJ_EDIT_ROOT")"
+VENV_PY="$DJ_EDIT_ROOT/venv/bin/python"
+[ -x "$VENV_PY" ] || VENV_PY="python3"
+
+cmd="${1:-}"
+shift || true
+
+usage() {
+    cat <<EOF
+dj-edit — DJ-set auto-edit pipeline
+
+usage:
+  dj-edit init <project_dir>
+  dj-edit quickstart [--demo]               # smoke-test the install with bundled fixture
+  dj-edit doctor                            # verify ffmpeg + python deps + encoder availability
+  dj-edit prep-audio <project_dir> --concat=PATH1[,PATH2,...] [--start=SEC] [--end=SEC] [--out=NAME.wav]
+  dj-edit ingest <project_dir> [--insta360=PATH]... [--a7iii=PATH]... [--dji=PATH]... --audio=PATH
+                              [--insta360-projection=e|dfisheye]
+  dj-edit analyze <project_dir>
+  dj-edit sync <project_dir>
+  dj-edit hook <project_dir> [--title="TITLE TEXT"]
+  dj-edit score <project_dir>
+  dj-edit edl <project_dir> [--aspects=9x16,16x9] [--style=aggressive|clean|signature]
+  dj-edit render <project_dir> --aspect=<9x16|16x9|1x1> [--out=PATH] [--encoder=auto|vaapi|videotoolbox|x264]
+  dj-edit deliver <project_dir>             # render full set 9x16 + 16x9 + highlight + drops
+  dj-edit run <project_dir>                 # analyze -> sync -> score -> edl -> deliver
+EOF
+    exit 1
+}
+
+[ -z "$cmd" ] && usage
+
+case "$cmd" in
+    init)
+        proj="${1:-}"; [ -z "$proj" ] && usage
+        mkdir -p "$proj"/{footage/{insta360,a7iii,dji,audio},cmds,cache,out/{drops,thumbs}}
+        echo "initialized: $proj"
+        ;;
+
+    prep-audio)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        CONCAT=""; START=""; END=""; OUT="master.wav"
+        for arg in "$@"; do
+            case "$arg" in
+                --concat=*) CONCAT="${arg#*=}" ;;
+                --start=*)  START="${arg#*=}" ;;
+                --end=*)    END="${arg#*=}" ;;
+                --out=*)    OUT="${arg#*=}" ;;
+                *) echo "unknown $arg" >&2; usage ;;
+            esac
+        done
+        [ -z "$CONCAT" ] && { echo "--concat is required" >&2; exit 2; }
+        mkdir -p "$proj/footage/audio"
+        OUT_PATH="$proj/footage/audio/$OUT"
+        # Build a concat list file. Python writes it to handle paths with single quotes.
+        IFS=',' read -ra FILES <<< "$CONCAT"
+        LIST=$(mktemp /tmp/dj-edit-concat-XXXXXX.txt)
+        trap "rm -f $LIST" EXIT
+        # Validate each path exists and write the concat list with proper escaping
+        "$VENV_PY" -c "
+import os, sys
+paths = sys.argv[1:-1]
+out = sys.argv[-1]
+with open(out, 'w') as f:
+    for p in paths:
+        full = os.path.realpath(p)
+        if not os.path.isfile(full):
+            print(f'missing: {p}', file=sys.stderr)
+            sys.exit(3)
+        # ffmpeg concat: 'file' directive expects single quotes around path,
+        # any literal ' in the path must be escaped as '\\\\\\''. Easier: just
+        # use double-quote-escape via the 'file' directive's escaping rule.
+        escaped = full.replace(\"'\", \"'\\\\''\")
+        f.write(f\"file '{escaped}'\n\")
+" "${FILES[@]}" "$LIST"
+        EXTRA=()
+        [ -n "$START" ] && EXTRA+=(-ss "$START")
+        [ -n "$END" ] && EXTRA+=(-to "$END")
+        echo "[prep-audio] concatenating ${#FILES[@]} files into $OUT_PATH..." >&2
+        ffmpeg -y -v error -f concat -safe 0 -i "$LIST" \
+            "${EXTRA[@]}" \
+            -c:a pcm_f32le -ar 48000 -ac 2 "$OUT_PATH"
+        ffprobe -v error -show_entries format=duration:stream=channels,sample_rate "$OUT_PATH"
+        ;;
+
+    ingest)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        bash "$DJ_EDIT_ROOT/bin/ingest.sh" "$proj" "$@"
+        ;;
+
+    analyze)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        # Find master audio
+        AUDIO_REL=$(jq -r '.audio.path' "$proj/manifest.json")
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/analyze-audio.py" \
+            "$proj/$AUDIO_REL" --out-dir "$proj" "$@"
+        ;;
+
+    sync)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/sync-cameras.py" --project "$proj" "$@"
+        ;;
+
+    hook)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/pick-hook.py" --project "$proj" "$@"
+        ;;
+
+    score)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/score-shots.py" --project "$proj" "$@"
+        ;;
+
+    edl)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/build-edl.py" --project "$proj" "$@"
+        ;;
+
+    render)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        bash "$DJ_EDIT_ROOT/bin/render.sh" "$proj" "$@"
+        ;;
+
+    deliver)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        echo "[deliver] 9x16 full set..." >&2
+        bash "$DJ_EDIT_ROOT/bin/render.sh" "$proj" --aspect=9x16 \
+            --out="$proj/out/set_9x16.mp4" "$@"
+        echo "[deliver] 16x9 full set..." >&2
+        bash "$DJ_EDIT_ROOT/bin/render.sh" "$proj" --aspect=16x9 \
+            --out="$proj/out/set_16x9.mp4" "$@"
+        # Highlight: top-N drops concatenated, ≤ 90 s.
+        "$VENV_PY" - "$proj" <<'PY'
+import json, subprocess, sys
+from pathlib import Path
+proj = Path(sys.argv[1])
+events_data = json.loads((proj / "events.json").read_text())
+# Audio window from EDL determines master_t range covered by set_9x16.mp4
+# (which starts at master_t = audio_master_start, not master_t = 0).
+edl_9x16 = proj / "edl_9x16.json"
+audio_start = 0.0
+if edl_9x16.exists():
+    audio_start = json.loads(edl_9x16.read_text()).get("audio_master_start", 0.0)
+events = events_data["events"]
+drops = sorted([e for e in events if e["type"] == "drop"],
+               key=lambda e: e["intensity"], reverse=True)[:6]
+drops.sort(key=lambda e: e["t"])
+out_drops = proj / "out" / "drops"
+out_drops.mkdir(parents=True, exist_ok=True)
+print(f"[deliver] extracting {len(drops)} top drops as clips...", file=sys.stderr)
+clip_paths = []
+failures = []
+set_path = proj / "out" / "set_9x16.mp4"
+if not set_path.exists():
+    print(f"WARN: {set_path} not found — skipping per-drop extraction", file=sys.stderr)
+    sys.exit(0)
+for i, d in enumerate(drops):
+    # Drop master_t → output_t in set_9x16.mp4 (subtract audio_start)
+    drop_out_t = max(0.0, d["t"] - audio_start)
+    lead = max(0.0, drop_out_t - 8.0)
+    tail = drop_out_t + 10.0
+    mm = int(d["t"] // 60)
+    ss = int(d["t"] % 60)
+    intensity = int(round(d["intensity"] * 100))
+    out_clip = out_drops / f"drop_{i+1:02d}_t{mm:02d}m{ss:02d}s_int{intensity:03d}.mp4"
+    r = subprocess.run([
+        "ffmpeg", "-y", "-v", "error",
+        "-ss", str(lead), "-to", str(tail),
+        "-i", str(set_path),
+        "-c", "copy",
+        "-metadata", f"title=Drop @ {mm:02d}:{ss:02d}",
+        "-metadata", f"comment=intensity={d['intensity']:.2f}",
+        str(out_clip),
+    ], check=False)
+    if r.returncode == 0 and out_clip.exists() and out_clip.stat().st_size > 0:
+        clip_paths.append(out_clip)
+        print(f"  + {out_clip.name}", file=sys.stderr)
+    else:
+        failures.append(out_clip.name)
+        print(f"  ! failed: {out_clip.name}", file=sys.stderr)
+
+# Write an INDEX.txt as a human-readable tracklist
+index = out_drops / "INDEX.txt"
+with open(index, "w") as f:
+    f.write(f"# {len(clip_paths)} drop clips extracted from set_9x16.mp4\n")
+    for i, (d, p) in enumerate(zip(drops, clip_paths)):
+        mm, ss = int(d['t']//60), int(d['t']%60)
+        f.write(f"[{i+1:02d}] {mm:02d}:{ss:02d}  intensity {d['intensity']:.2f}  -> {p.name}\n")
+
+# Build the highlight reel by concatenating drops
+if clip_paths:
+    hl_list = proj / "cache" / "highlight_list.txt"
+    hl_list.parent.mkdir(parents=True, exist_ok=True)
+    with open(hl_list, "w") as f:
+        for p in clip_paths:
+            escaped = str(p.resolve()).replace("'", "'\\''")
+            f.write(f"file '{escaped}'\n")
+    hl_out = proj / "out" / "highlight_9x16.mp4"
+    r = subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+        "-i", str(hl_list), "-c", "copy", str(hl_out),
+    ], check=False)
+    if r.returncode == 0:
+        print(f"  highlight: {hl_out}", file=sys.stderr)
+    else:
+        print(f"  ! highlight concat failed", file=sys.stderr)
+
+if failures:
+    print(f"[deliver] WARN: {len(failures)} drop clips failed to extract", file=sys.stderr)
+PY
+        ;;
+
+    run)
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        echo "[run] analyze..." >&2
+        bash "$0" analyze "$proj"
+        echo "[run] sync..." >&2
+        bash "$0" sync "$proj"
+        echo "[run] hook..." >&2
+        bash "$0" hook "$proj" || echo "(no hook chosen)" >&2
+        echo "[run] score..." >&2
+        bash "$0" score "$proj"
+        echo "[run] edl..." >&2
+        bash "$0" edl "$proj"
+        echo "[run] deliver..." >&2
+        bash "$0" deliver "$proj"
+        ;;
+
+    preview)
+        proj="${1:-}"; shift || true
+        WINDOW="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        [ -z "$WINDOW" ] && usage
+        ASPECT="9x16"
+        for arg in "$@"; do
+            case "$arg" in --aspect=*) ASPECT="${arg#*=}" ;; esac
+        done
+        T0="${WINDOW%-*}"; T1="${WINDOW#*-}"
+        bash "$DJ_EDIT_ROOT/bin/render.sh" "$proj" --aspect="$ASPECT" \
+            --start="$T0" --end="$T1" \
+            --out="$proj/out/preview_${T0}-${T1}_${ASPECT}.mp4"
+        ;;
+
+    quickstart)
+        # Smoke-test the install with bundled demo fixture
+        DEMO_FLAG=""
+        for arg in "$@"; do
+            [ "$arg" = "--demo" ] && DEMO_FLAG="yes"
+        done
+        if [ -z "$DEMO_FLAG" ]; then
+            echo "usage: dj-edit quickstart --demo" >&2
+            exit 1
+        fi
+        DEMO_DIR="$DJ_EDIT_ROOT/examples/demo"
+        if [ ! -f "$DEMO_DIR/demo_audio.wav" ] || [ ! -f "$DEMO_DIR/demo_video.mp4" ]; then
+            echo "ERROR: demo fixture missing at $DEMO_DIR" >&2
+            echo "Re-clone the repo or re-install via brew." >&2
+            exit 2
+        fi
+        proj="${TMPDIR:-/tmp}/dj-edit-quickstart-$$"
+        echo "[quickstart] creating temp project at $proj"
+        bash "$0" init "$proj"
+        bash "$0" ingest "$proj" --a7iii="$DEMO_DIR/demo_video.mp4" --audio="$DEMO_DIR/demo_audio.wav"
+        bash "$0" run "$proj"
+        echo ""
+        echo "[quickstart] DONE. Output in: $proj/out/"
+        case "$(uname -s)" in
+            Darwin) open "$proj/out/" ;;
+            Linux)  command -v xdg-open >/dev/null && xdg-open "$proj/out/" >/dev/null 2>&1 || true ;;
+        esac
+        ;;
+
+    doctor)
+        echo "[doctor] checking dj-edit dependencies..."
+        echo ""
+        OK=0; FAIL=0
+        check() {
+            local label="$1"; local cmd="$2"
+            if eval "$cmd" >/dev/null 2>&1; then
+                local ver=$(eval "$cmd" 2>&1 | head -1 | head -c 80)
+                echo "  ✓ $label  ($ver)"
+                OK=$((OK+1))
+            else
+                echo "  ✗ $label  NOT FOUND"
+                FAIL=$((FAIL+1))
+            fi
+        }
+        check "ffmpeg"  "ffmpeg -version"
+        check "ffprobe" "ffprobe -version"
+        check "python3" "python3 --version"
+        check "venv librosa" "[ -x \"$VENV_PY\" ] && \"$VENV_PY\" -c \"import librosa\""
+        check "venv scipy"   "[ -x \"$VENV_PY\" ] && \"$VENV_PY\" -c \"import scipy\""
+        check "venv numpy"   "[ -x \"$VENV_PY\" ] && \"$VENV_PY\" -c \"import numpy\""
+        check "venv soundfile" "[ -x \"$VENV_PY\" ] && \"$VENV_PY\" -c \"import soundfile\""
+        echo ""
+        echo "[doctor] ffmpeg features:"
+        FILTERS_LIST=$(ffmpeg -hide_banner -filters 2>/dev/null)
+        for f in v360 sendcmd loudnorm drawtext tblend signalstats zoompan; do
+            # ffmpeg -filters format: ` .. <name>  <io_signature>  <description>`
+            if echo "$FILTERS_LIST" | grep -qE "^ ?[.TS]+ +$f +" ; then
+                echo "  ✓ filter: $f"
+            else
+                echo "  ✗ filter: $f  (ffmpeg compiled without this — re-install with full features)"
+                FAIL=$((FAIL+1))
+            fi
+        done
+        echo ""
+        echo "[doctor] ffmpeg encoders:"
+        ENC_LIST=$(ffmpeg -hide_banner -encoders 2>/dev/null)
+        # Encoders: ` V....D <name>  <description>`
+        any_enc=0
+        for enc in h264_videotoolbox h264_vaapi libx264; do
+            if echo "$ENC_LIST" | grep -qE "^ ?V[.FXSBD]+ +$enc +"; then
+                echo "  ✓ encoder: $enc"
+                any_enc=1
+            else
+                echo "  - encoder: $enc  (not available on this platform)"
+            fi
+        done
+        if [ "$any_enc" = "0" ]; then
+            echo "  ! no H.264 encoder available! Re-install ffmpeg with libx264."
+            FAIL=$((FAIL+1))
+        fi
+        echo ""
+        case "$(uname -s)" in
+            Darwin) echo "  Platform: Darwin → recommended encoder=videotoolbox" ;;
+            Linux)
+                if [ -e /dev/dri/renderD128 ]; then
+                    echo "  Platform: Linux + /dev/dri/renderD128 → recommended encoder=vaapi"
+                else
+                    echo "  Platform: Linux without GPU → recommended encoder=x264"
+                fi
+                ;;
+        esac
+        echo ""
+        if [ "$FAIL" -eq 0 ]; then
+            echo "[doctor] $OK checks PASSED. Ready to render."
+            exit 0
+        else
+            echo "[doctor] $FAIL checks FAILED. Install missing components or run ./setup.sh"
+            exit 1
+        fi
+        ;;
+
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        echo "unknown command: $cmd" >&2
+        usage
+        ;;
+esac

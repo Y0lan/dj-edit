@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+
+# Venv
+venv/
+.venv/
+env/
+
+# Editor
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# dj-edit project artifacts (don't check user's footage / renders into source)
+footage/
+out/
+cache/
+cmds/
+manifest.json
+events.json
+beats.json
+offsets.json
+hook.json
+shot_scores.json
+edl_*.json
+
+# Loudnorm cache files
+loudnorm_*.json
+
+# Bundled demo fixture exception (keep examples/demo/*.{wav,mp4})
+!examples/demo/
+
+# Build artifacts
+dist/
+build/
+*.tar.gz

@@ -1,0 +1,7 @@
+# Pinned runtime dependencies for dj-edit.
+# For development install, use `pip install -e ".[dev]"` from pyproject.toml.
+
+librosa>=0.10,<0.12
+numpy>=1.24,<2.5
+scipy>=1.11,<1.18
+soundfile>=0.12,<1.0

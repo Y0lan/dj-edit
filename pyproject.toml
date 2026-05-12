@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dj-edit"
+version = "0.1.0"
+description = "Auto-edit DJ-set videos. Detects drops, builds, breakdowns from a master audio track and produces 9:16 + 16:9 cuts with virtual-camera reframing and beat-snapped edits."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Yolan" },
+]
+requires-python = ">=3.11,<3.14"
+keywords = ["video", "audio", "dj", "ffmpeg", "librosa", "auto-edit", "tiktok", "viral"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+]
+
+dependencies = [
+    # librosa 0.11 stabilized beat_track signature; pin under 0.12 until tested.
+    "librosa>=0.10,<0.12",
+    # numpy 2.x is fine for librosa 0.11; clamp under 2.5 to avoid surprise breakage.
+    "numpy>=1.24,<2.5",
+    "scipy>=1.11,<1.18",
+    "soundfile>=0.12,<1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-timeout>=2.0,<3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Y0lan/dj-edit"
+Repository = "https://github.com/Y0lan/dj-edit"
+Issues = "https://github.com/Y0lan/dj-edit/issues"
+
+[project.scripts]
+dj-edit = "dj_edit_cli:main"
+
+[tool.setuptools]
+# We ship the bin/ + lib/ + presets/ as data, not as a Python package per se,
+# because the bin/ scripts are bash + Python hybrids. The brew formula installs
+# them to share/dj-edit/ and adds a launcher to /usr/local/bin/.
+packages = ["lib"]
+
+[tool.setuptools.package-data]
+lib = ["*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+timeout = 60
