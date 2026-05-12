@@ -1,0 +1,31 @@
+{
+  "name": "signature",
+  "description": "Balanced default — mix of music-driven and cinematic moves",
+  "move_pools": {
+    "breakdown": [
+      {"name": "breakdown_drift", "weight": 3},
+      {"name": "orbit", "weight": 2},
+      {"name": "crowd_reveal", "weight": 2},
+      {"name": "tilt_reveal", "weight": 1},
+      {"name": "counter_motion", "weight": 2}
+    ],
+    "build": [
+      {"name": "build_tension", "weight": 4},
+      {"name": "dolly_zoom", "weight": 2},
+      {"name": "dolly_with_drift", "weight": 2}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 5},
+      {"name": "whip_pan", "weight": 1}
+    ],
+    "peak": [
+      {"name": "bpm_sync_orbit", "weight": 3},
+      {"name": "kick_pulse_fov", "weight": 2},
+      {"name": "orbit", "weight": 2}
+    ],
+    "lull": [
+      {"name": "orbit", "weight": 2},
+      {"name": "crowd_reveal", "weight": 1}
+    ]
+  }
+}

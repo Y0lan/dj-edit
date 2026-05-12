@@ -8,13 +8,16 @@ respects camera coverage. In single-camera mode, switches *virtual framings*
 from __future__ import annotations
 import argparse
 import json
+import random
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lib.selector import (
     cameras_at, pick_camera, framing_for_event, FRAMINGS,
+    pick_move_for_event, load_pool_overrides,
 )
+from lib import moves as moves_lib
 
 
 def nearest_beat(t: float, beats: list[float], window: float = 0.2) -> float:
@@ -76,8 +79,49 @@ def find_cuts(t_start: float, t_end: float, beats: list[float],
     return deduped
 
 
+def _generate_move_cmd(project: Path, aspect: str, move_name: str, duration: float,
+                       bpm: float, intensity: float, target_yaw: float | None = None,
+                       clip_index: int = 0) -> str:
+    """Generate a per-clip .cmd file for an Insta360 move, return its absolute path.
+
+    aspect is included in the path so 9x16 and 16x9 builds don't collide on
+    the same `cmds/move_NNNN_<name>.cmd` filenames (clip_index_counter resets
+    per build() call).
+
+    For Tier B moves that need BPM, pass it as a kwarg. Others ignore it.
+    """
+    cmds_dir = project / "cmds" / aspect
+    cmds_dir.mkdir(parents=True, exist_ok=True)
+    cmd_path = cmds_dir / f"move_{clip_index:04d}_{move_name}.cmd"
+
+    # Move-specific params keyed off the event context.
+    # Intensity is clamped to [0, 1] here so downstream math doesn't go negative
+    # or above 1 from unsanitized event values.
+    intensity = max(0.0, min(1.0, float(intensity)))
+    params = {}
+    if move_name == "bpm_sync_orbit":
+        params = {"bpm": bpm, "bars_per_rotation": 4}
+    elif move_name == "kick_pulse_fov":
+        params = {"bpm": bpm, "amp": 2 + intensity * 4}
+    elif move_name == "drop_impact":
+        # `is None` check, NOT `or 60.0` — target_yaw=0.0 is a valid explicit yaw.
+        params = {"target_yaw": 60.0 if target_yaw is None else float(target_yaw)}
+    elif move_name == "build_tension":
+        params = {"fov_start": 95, "fov_end": 55 + (1 - intensity) * 10}
+    elif move_name == "breakdown_drift":
+        params = {"yaw_speed": 8.0, "pitch_end": -12.0}
+
+    cmd_text = moves_lib.generate(move_name, duration, params)
+    cmd_path.write_text(cmd_text + "\n")
+    # Return ABSOLUTE path so render.sh works regardless of cwd it's invoked from
+    # (sendcmd=f=<path> is read by ffmpeg relative to its working dir).
+    return str(cmd_path.resolve())
+
+
 def build(project: Path, aspect: str, target_fps: int,
-          src_w: int = 3840, src_h: int = 2160) -> dict:
+          src_w: int = 3840, src_h: int = 2160,
+          style: str | None = None, reference: str | None = None,
+          rng_seed: int | None = None) -> dict:
     """Build EDL for given aspect ratio.
 
     Returns a dict: {clips: [...], audio_master_start: float, audio_master_end: float}.
@@ -101,13 +145,23 @@ def build(project: Path, aspect: str, target_fps: int,
     shot_scores: dict = {}
     if (project / "shot_scores.json").exists():
         shot_scores = json.loads((project / "shot_scores.json").read_text())
-    # Hook is intentionally NOT prepended to the main EDL (it would desync
-    # against the master audio which starts at master_t=0). Hook lives in
-    # the separate highlight render (v1.1).
+    # Hook is intentionally NOT prepended to the main EDL (it would desync).
 
     events = events_data["events"]
     beats = [b["t"] for b in beats_data.get("beats", [])]
     master_duration = events_data["meta"].get("duration", 0)
+    bpm = float(beats_data.get("tempo", 128.0)) or 128.0
+
+    # Tier D: load move-pool overrides from --style / --reference packs.
+    # Pass MOVES set so the loader can warn on pack entries referencing
+    # non-existent move names (avoids silent fallback to orbit at render time).
+    presets_root = str(Path(__file__).resolve().parent.parent / "presets")
+    pool_override = load_pool_overrides(
+        style=style, reference=reference, presets_root=presets_root,
+        valid_moves=set(moves_lib.MOVES.keys()),
+    )
+    rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
+    recent_moves: list[str] = []  # rolling window for avoid-repeat
 
     edl: list[dict] = []
     pos = 0.0
@@ -116,27 +170,51 @@ def build(project: Path, aspect: str, target_fps: int,
     event_seq_counter: dict[str, int] = {}
     first_master_t: float | None = None
     last_master_t: float = 0.0
+    clip_index_counter = [0]  # mutable for closure access in emit()
 
     def emit(c0: float, c1: float, finfo: dict, camera: str,
              framing: str, treatment: str | None = None,
              move: str | None = None,
-             transition_out: str = "hard", title: str | None = None) -> None:
+             transition_out: str = "hard", title: str | None = None,
+             event_type: str | None = None, intensity: float = 0.5) -> None:
         """Append an EDL entry, track master timestamps, advance pos.
 
-        Monotonic: c0 is clamped to last_master_t to prevent overlapping events
-        from double-emitting master coverage (which would make video duration
-        > audio window). src_in is computed AFTER the clamp so video frame
-        timing matches the clamped master_t exactly.
+        For Insta360 entries (camera == "insta360"), pick a move from the
+        configured pool (Tier D), generate a per-clip .cmd file (Tier A + B),
+        and store its absolute path in entry["cmd_path"].
         """
         nonlocal pos, first_master_t, last_master_t, last_pick, last_pick_t
         c0 = max(c0, last_master_t)
         dur = c1 - c0
         if dur <= 0.05:
             return
-        # Coverage check on the (possibly clamped) c0
         if not coverage_ok(finfo, c0, dur):
             return
         src_in = to_src_in(c0, finfo)
+
+        cmd_path = None
+        if camera == "insta360":
+            # Pick a move (Tier D pool, intensity-biased, avoid-repeat)
+            chosen_move = move or pick_move_for_event(
+                event_type or "lull", intensity=intensity, rng=rng,
+                recent_picks=recent_moves[-3:], pool_override=pool_override,
+            )
+            move = chosen_move
+            # Generate a per-clip .cmd file (Tier A + B math)
+            try:
+                cmd_path = _generate_move_cmd(
+                    project, aspect, chosen_move, dur, bpm, intensity,
+                    clip_index=clip_index_counter[0],
+                )
+            except (ValueError, OSError) as ex:
+                print(f"WARN: move '{chosen_move}' generation failed ({ex}); "
+                      f"falling back to default orbit preset", file=sys.stderr)
+                move = "orbit"
+                cmd_path = None
+            recent_moves.append(chosen_move)
+            if len(recent_moves) > 8:
+                recent_moves.pop(0)
+
         entry: dict = {
             "in": pos, "out": pos + dur,
             "master_in": c0, "master_out": c0 + dur,
@@ -147,10 +225,13 @@ def build(project: Path, aspect: str, target_fps: int,
         }
         if move is not None:
             entry["move"] = move
+        if cmd_path is not None:
+            entry["cmd_path"] = cmd_path
         if title is not None:
             entry["title"] = title
         edl.append(entry)
         pos += dur
+        clip_index_counter[0] += 1
         if first_master_t is None:
             first_master_t = c0
         last_master_t = c0 + dur
@@ -179,10 +260,12 @@ def build(project: Path, aspect: str, target_fps: int,
                 cuts = find_cuts(timeline_t, ev_t, beats, subdivision=1, min_cut=3.5)
                 for i in range(len(cuts) - 1):
                     emit(cuts[i], cuts[i + 1], finfo, cam,
-                         framing_for_event("lull", i))
+                         framing_for_event("lull", i),
+                         event_type="lull", intensity=0.3)
 
         event_seq_counter[ev["type"]] = event_seq_counter.get(ev["type"], 0) + 1
         ev_dur = max(0.5, float(ev.get("duration", 1.0)))
+        ev_intensity = float(ev.get("intensity", 0.5))
 
         if ev["type"] == "breakdown":
             cam_pick = pick_camera(offsets, shot_scores, ev_t + ev_dur / 2,
@@ -190,7 +273,8 @@ def build(project: Path, aspect: str, target_fps: int,
             if cam_pick:
                 cam, finfo = cam_pick
                 emit(ev_t, ev_t + ev_dur, finfo, cam,
-                     "wide", move="orbit", transition_out="soft")
+                     "wide", transition_out="soft",
+                     event_type="breakdown", intensity=ev_intensity)
         elif ev["type"] == "build":
             cam_pick = pick_camera(offsets, shot_scores, ev_t + ev_dur / 2,
                                    last_pick=last_pick, last_pick_time=last_pick_t)
@@ -199,7 +283,8 @@ def build(project: Path, aspect: str, target_fps: int,
                 cuts = find_cuts(ev_t, ev_t + ev_dur, beats, subdivision=4, min_cut=0.4)
                 for i in range(len(cuts) - 1):
                     emit(cuts[i], cuts[i + 1], finfo, cam,
-                         framing_for_event("build", i))
+                         framing_for_event("build", i),
+                         event_type="build", intensity=ev_intensity)
         elif ev["type"] == "drop":
             cam_pick = pick_camera(offsets, shot_scores, ev_t,
                                    last_pick=last_pick, last_pick_time=last_pick_t)
@@ -207,7 +292,8 @@ def build(project: Path, aspect: str, target_fps: int,
                 cam, finfo = cam_pick
                 impact_dur = 0.4
                 emit(ev_t, ev_t + impact_dur, finfo, cam,
-                     "punch", treatment="flash_freeze")
+                     "punch", treatment="flash_freeze",
+                     event_type="drop", intensity=ev_intensity)
                 post_t0 = ev_t + impact_dur
                 post_t1 = min(post_t0 + 6.0, master_duration)
                 cuts = find_cuts(post_t0, post_t1, beats, subdivision=2, min_cut=0.4)
@@ -219,7 +305,8 @@ def build(project: Path, aspect: str, target_fps: int,
                     if not cp:
                         continue
                     cam2, fi2 = cp
-                    emit(c0, c1, fi2, cam2, framing_for_event("peak", i))
+                    emit(c0, c1, fi2, cam2, framing_for_event("peak", i),
+                         event_type="peak", intensity=ev_intensity)
         elif ev["type"] == "peak":
             cuts = find_cuts(ev_t, ev_t + ev_dur, beats, subdivision=1, min_cut=2.0)
             for i in range(len(cuts) - 1):
@@ -229,7 +316,8 @@ def build(project: Path, aspect: str, target_fps: int,
                 if not cp:
                     continue
                 cam, finfo = cp
-                emit(c0, c1, finfo, cam, framing_for_event("peak", i))
+                emit(c0, c1, finfo, cam, framing_for_event("peak", i),
+                     event_type="peak", intensity=ev_intensity)
 
         timeline_t = max(timeline_t + 0.5, ev_t + ev_dur, last_master_t)
         upcoming = [e for e in upcoming if e["t"] >= timeline_t]
@@ -244,7 +332,8 @@ def build(project: Path, aspect: str, target_fps: int,
             cuts = find_cuts(last_master_t, tail_end, beats, subdivision=1, min_cut=4.0)
             for i in range(len(cuts) - 1):
                 emit(cuts[i], cuts[i + 1], finfo, cam,
-                     framing_for_event("lull", i))
+                     framing_for_event("lull", i),
+                     event_type="lull", intensity=0.2)
 
     return {
         "clips": edl,
@@ -258,8 +347,12 @@ def main() -> int:
     p.add_argument("--project", type=Path, required=True)
     p.add_argument("--aspects", type=str, default="9x16,16x9",
                    help="comma-separated: 9x16,16x9,1x1")
-    p.add_argument("--style", type=str, default="aggressive",
-                   choices=["aggressive", "clean", "signature"])
+    p.add_argument("--style", type=str, default="signature",
+                   help="pool weights from presets/styles/<name>.json (e.g. aggressive, clean, signature)")
+    p.add_argument("--reference", type=str, default=None,
+                   help="artist-style pack from presets/references/<name>.json (e.g. anyma, fisher, rinse)")
+    p.add_argument("--seed", type=int, default=None,
+                   help="rng seed for reproducible move selection (omit for random)")
     args = p.parse_args()
 
     manifest = json.loads((args.project / "manifest.json").read_text())
@@ -275,7 +368,8 @@ def main() -> int:
 
     for aspect in args.aspects.split(","):
         aspect = aspect.strip()
-        result = build(args.project, aspect, target_fps, src_w=src_w, src_h=src_h)
+        result = build(args.project, aspect, target_fps, src_w=src_w, src_h=src_h,
+                       style=args.style, reference=args.reference, rng_seed=args.seed)
         clips = result["clips"]
         if not clips:
             print(f"ERROR ({aspect}): zero clips. No camera coverage overlaps with detected events. "

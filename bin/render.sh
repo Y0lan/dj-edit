@@ -92,13 +92,22 @@ fi
 mkdir -p "$(dirname "$OUT")"
 
 # ── Output cache: skip the render entirely if the EDL hasn't changed ──
-# Hash the EDL contents. If a previous render with the same EDL is in cache,
-# copy it to OUT instead of re-rendering. Saves the full 25-40 min on re-runs.
+# Hash the EDL contents + every referenced .cmd file's content. The cmd files
+# encode v360 motion (Tier B dynamic). If a build-edl rerun produces the SAME
+# EDL JSON (same cmd_path strings) but DIFFERENT .cmd contents (e.g. user
+# tweaked a move generator), the cache would otherwise serve stale video.
 EDL_HASH=$("$VENV_PY" -c "
 import hashlib, json, sys
+from pathlib import Path
 edl = json.load(open(sys.argv[1]))
-blob = json.dumps(edl, sort_keys=True, separators=(',', ':'))
-print(hashlib.sha256(blob.encode()).hexdigest()[:16])
+h = hashlib.sha256()
+h.update(json.dumps(edl, sort_keys=True, separators=(',', ':')).encode())
+for clip in edl.get('clips', []):
+    cp = clip.get('cmd_path')
+    if cp and Path(cp).is_file():
+        h.update(b'|cmd:')
+        h.update(Path(cp).read_bytes())
+print(h.hexdigest()[:16])
 " "$EDL")
 CACHE_OUT="$PROJECT/cache/render_${ASPECT}_${EDL_HASH}.mp4"
 mkdir -p "$(dirname "$CACHE_OUT")"
@@ -224,8 +233,12 @@ for i, clip in enumerate(clips):
     framing = clip.get("framing", "medium")
 
     if clip.get("camera") == "insta360":
-        move = clip.get("move", "orbit")
-        cmd_path = str(dj_root / "presets" / "moves" / f"{move.replace('_', '-')}.cmd")
+        # Prefer per-clip cmd_path (Tier B/D dynamic generation); fall back to
+        # the static preset for legacy EDL entries.
+        cmd_path = clip.get("cmd_path")
+        if not cmd_path:
+            move = clip.get("move", "orbit")
+            cmd_path = str(dj_root / "presets" / "moves" / f"{move.replace('_', '-')}.cmd")
         v360_chain = v360_filter_chain(escape_ffmpeg_path(cmd_path), out_w, out_h)
         chain = [
             f"[{si}:v]trim=start={src_in}:duration={duration},setpts=PTS-STARTPTS",

@@ -1,0 +1,23 @@
+{
+  "name": "anyma",
+  "description": "Cinematic melodic-techno — long breakdowns, slow reveals, contained drops",
+  "move_pools": {
+    "breakdown": [
+      {"name": "breakdown_drift", "weight": 6},
+      {"name": "tilt_reveal", "weight": 4},
+      {"name": "crowd_reveal", "weight": 3}
+    ],
+    "build": [
+      {"name": "build_tension", "weight": 3},
+      {"name": "dolly_with_drift", "weight": 5}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 3},
+      {"name": "dolly_zoom", "weight": 4}
+    ],
+    "peak": [
+      {"name": "bpm_sync_orbit", "weight": 5},
+      {"name": "orbit", "weight": 3}
+    ]
+  }
+}

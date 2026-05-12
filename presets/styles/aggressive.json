@@ -1,0 +1,29 @@
+{
+  "name": "aggressive",
+  "description": "Fast cuts, whip-pans dominate, drop_impact every drop, kick-pulse during peaks",
+  "move_pools": {
+    "breakdown": [
+      {"name": "breakdown_drift", "weight": 2},
+      {"name": "counter_motion", "weight": 3},
+      {"name": "tilt_reveal", "weight": 2}
+    ],
+    "build": [
+      {"name": "build_tension", "weight": 6},
+      {"name": "dolly_zoom", "weight": 1}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 8},
+      {"name": "whip_pan", "weight": 3}
+    ],
+    "peak": [
+      {"name": "kick_pulse_fov", "weight": 5},
+      {"name": "bpm_sync_orbit", "weight": 4},
+      {"name": "counter_motion", "weight": 2},
+      {"name": "whip_pan", "weight": 1}
+    ],
+    "lull": [
+      {"name": "bpm_sync_orbit", "weight": 3},
+      {"name": "orbit", "weight": 1}
+    ]
+  }
+}

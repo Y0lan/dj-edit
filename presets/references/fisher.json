@@ -1,0 +1,22 @@
+{
+  "name": "fisher",
+  "description": "High-energy tech-house — aggressive whips, drop impacts everywhere, kick-pulsed peaks",
+  "move_pools": {
+    "breakdown": [
+      {"name": "counter_motion", "weight": 4},
+      {"name": "breakdown_drift", "weight": 2}
+    ],
+    "build": [
+      {"name": "build_tension", "weight": 8}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 10},
+      {"name": "whip_pan", "weight": 4}
+    ],
+    "peak": [
+      {"name": "kick_pulse_fov", "weight": 6},
+      {"name": "bpm_sync_orbit", "weight": 3},
+      {"name": "whip_pan", "weight": 2}
+    ]
+  }
+}

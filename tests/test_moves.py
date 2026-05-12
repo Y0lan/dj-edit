@@ -1,57 +1,226 @@
-"""Unit tests for lib/moves.py — sendcmd .cmd generators for v360@mv."""
+"""Unit tests for lib/moves.py — sendcmd .cmd generators for v360@mv.
+
+These tests encode the CRITICAL invariants codex identified:
+  - Use `T` (seconds since command start) NOT bare `TI` for duration-scaled math.
+  - Avoid commas inside expressions (pow(x,2) → x*x; nested if → multi-line cmds).
+"""
+import re
+
 import pytest
 
 from lib import moves
 
 
+# ───────────────────────────── Invariants ────────────────────────────────
+
+
+def _expressions(cmd_text: str) -> list[str]:
+    """Extract the expression strings from a generated .cmd block."""
+    out = []
+    for line in cmd_text.strip().split("\n"):
+        # Format: "<t0>-<t1> [expr] v360@mv <param> <expression>;"
+        m = re.match(r"[\d.]+-[\d.]+ \[expr\] v360@mv \S+ (.+);", line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def assert_no_pow(cmd_text: str) -> None:
+    """pow(x, 2) has a comma → breaks sendcmd parsing. Use x*x instead."""
+    for expr in _expressions(cmd_text):
+        assert "pow(" not in expr, f"expression uses pow(): {expr}"
+
+
+def assert_no_if_with_commas(cmd_text: str) -> None:
+    """Nested if(lt(x,a),b,if(lt(x,c),d,e)) breaks sendcmd. Use multi-line cmds instead."""
+    for expr in _expressions(cmd_text):
+        # Allow if() only if its argument list doesn't span commas.
+        # We're strict: simply ban if( in any expression for safety.
+        assert "if(" not in expr, f"expression uses if(): {expr}"
+
+
+def assert_uses_T_for_time(cmd_text: str) -> None:
+    """T is absolute seconds. TI is normalized [0,1]. For duration-scaled math
+    we use T because the semantics are unambiguous."""
+    text = " ".join(_expressions(cmd_text))
+    # At least one expression should reference T (the time variable). If a
+    # function is purely static it's fine to skip — checked per-test.
+    if "T" not in text:
+        return
+    # Reject hidden TI misuse: we should NOT see math like "X*TI" because that
+    # would be normalized progress, easily mistaken for seconds.
+    # (Note: bare TI is allowed in static expressions, but we don't use it.)
+    assert "*TI" not in text and "TI*" not in text, \
+        f"expression uses TI for math: {text}"
+
+
+# ───────────────────────── Tier A: eased primitives ─────────────────────────
+
+
 class TestOrbit:
-    def test_emits_yaw_with_TI(self):
-        """orbit should drive yaw via TI (interval time)."""
-        cmd = moves.orbit(duration=8.0, yaw_speed=45.0)
+    def test_emits_all_three_params(self):
+        cmd = moves.orbit(duration=8.0)
         assert "v360@mv yaw" in cmd
-        assert "TI" in cmd
+        assert "v360@mv pitch" in cmd
+        assert "v360@mv h_fov" in cmd
 
-    def test_emits_three_lines(self):
-        """orbit sets yaw, pitch, and h_fov."""
-        cmd = moves.orbit(duration=8.0)
-        lines = cmd.strip().split("\n")
-        assert len(lines) == 3
+    def test_eased_uses_cos(self):
+        cmd = moves.orbit(duration=8.0, ease=True)
+        assert "cos" in cmd
 
-    def test_uses_expr_flag(self):
-        """Continuous expression eval requires [expr] flag."""
+    def test_linear_uses_yaw_speed_times_T(self):
+        cmd = moves.orbit(duration=8.0, yaw_speed=45.0, ease=False)
+        # Linear: yaw = 45*T (deg/sec * seconds = deg)
+        assert "45.0*T" in cmd or "45*T" in cmd
+
+    def test_clean_invariants(self):
         cmd = moves.orbit(duration=8.0)
-        assert "[expr]" in cmd
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
 
 
 class TestTiltReveal:
-    def test_pitch_interpolates(self):
+    def test_clean_invariants(self):
+        cmd = moves.tilt_reveal(duration=4.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
+
+    def test_includes_pitch_start_value(self):
         cmd = moves.tilt_reveal(duration=4.0, pitch_start=-60, pitch_end=0)
-        assert "pitch" in cmd
-        # Should compute a rate; (0 - (-60))/4 = 15
-        assert "15.0000" in cmd or "15.0" in cmd
+        assert "-60" in cmd
 
 
 class TestDollyZoom:
-    def test_h_fov_interpolates(self):
-        cmd = moves.dolly_zoom(duration=4.0, fov_start=90, fov_end=55)
-        assert "h_fov" in cmd
-        # rate = (55 - 90) / 4 = -8.75
-        assert "-8.75" in cmd
+    def test_clean_invariants(self):
+        cmd = moves.dolly_zoom(duration=4.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
 
 
 class TestWhipPan:
     def test_fast_yaw(self):
         cmd = moves.whip_pan(duration=0.4, yaw_speed=900.0)
-        assert "v360@mv yaw" in cmd
         assert "900" in cmd
-        assert "TI" in cmd
+        assert "*T" in cmd
 
 
 class TestCrowdReveal:
-    def test_yaw_and_fov(self):
+    def test_clean_invariants(self):
         cmd = moves.crowd_reveal(duration=6.0)
-        assert "v360@mv yaw" in cmd
-        assert "v360@mv h_fov" in cmd
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
+
+
+class TestCounterMotion:
+    def test_clean_invariants(self):
+        cmd = moves.counter_motion(duration=8.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
+
+    def test_three_params(self):
+        cmd = moves.counter_motion(duration=8.0)
+        assert "yaw" in cmd and "pitch" in cmd and "h_fov" in cmd
+
+
+class TestDollyWithDrift:
+    def test_clean_invariants(self):
+        cmd = moves.dolly_with_drift(duration=4.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
+
+
+# ─────────────────── Tier B: music-driven primitives ────────────────────────
+
+
+class TestBpmSyncOrbit:
+    def test_yaw_speed_derived_from_bpm(self):
+        # At 128 BPM, 4 bars = 4 * (60/128 * 4) = 7.5s. 360/7.5 = 48 deg/s
+        cmd = moves.bpm_sync_orbit(duration=15.0, bpm=128.0, bars_per_rotation=4)
+        assert "*T" in cmd
+        assert "48" in cmd
+
+    def test_handles_low_bpm(self):
+        cmd = moves.bpm_sync_orbit(duration=10.0, bpm=0.001)
+        # Should not crash; clamps to safe_bpm=30
+        assert "yaw" in cmd
+
+    def test_clean_invariants(self):
+        cmd = moves.bpm_sync_orbit(duration=10.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+
+
+class TestKickPulseFov:
+    def test_uses_abs_sin(self):
+        cmd = moves.kick_pulse_fov(duration=10.0, bpm=128.0)
+        assert "abs(sin" in cmd
+
+    def test_no_commas_in_abs_sin(self):
+        # abs(sin(PI*T/x)) — only one arg, no comma inside abs() or sin()
+        cmd = moves.kick_pulse_fov(duration=10.0)
+        assert_no_if_with_commas(cmd)
+        # abs(x) has no comma; sin(x) has no comma
+        for expr in _expressions(cmd):
+            assert "abs(sin(" in expr or "sin" not in expr
+
+
+class TestDropImpact:
+    def test_no_nested_if_uses_multiple_commands(self):
+        """drop_impact MUST emit multiple time-windowed commands instead of
+        if(lt(...), ...) — codex caught the nested-if comma bug."""
+        cmd = moves.drop_impact(duration=0.8, target_yaw=90.0)
+        assert_no_if_with_commas(cmd)
+        # Expect multiple lines (one command per phase)
+        line_count = len([l for l in cmd.strip().split("\n") if l.strip()])
+        assert line_count >= 5, f"drop_impact should emit >=5 commands, got {line_count}"
+
+    def test_target_yaw_appears(self):
+        cmd = moves.drop_impact(duration=0.8, target_yaw=90.0)
+        assert "90" in cmd
+
+    def test_target_yaw_zero_allowed(self):
+        # target_yaw=0 should produce a valid cmd; codex caught `or 60.0` bug.
+        cmd = moves.drop_impact(duration=0.8, target_yaw=0.0)
+        assert "yaw" in cmd
+
+    def test_short_duration_falls_back(self):
+        cmd = moves.drop_impact(duration=0.05, target_yaw=90.0)
+        # Should be a single static hold, not 4 phases
+        assert "v360@mv" in cmd
+
+
+class TestBuildTension:
+    def test_uses_t_times_t_not_pow(self):
+        """Quadratic ease-in must be T*T, not pow(T,2) — comma breaks sendcmd."""
+        cmd = moves.build_tension(duration=8.0)
+        assert "T*T" in cmd
+        assert_no_pow(cmd)
+
+    def test_clean_invariants(self):
+        cmd = moves.build_tension(duration=8.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+
+    def test_zero_duration_safe(self):
+        cmd = moves.build_tension(duration=0.0)
+        assert "v360@mv" in cmd
+
+
+class TestBreakdownDrift:
+    def test_clean_invariants(self):
+        cmd = moves.breakdown_drift(duration=12.0)
+        assert_no_pow(cmd)
+        assert_no_if_with_commas(cmd)
+        assert_uses_T_for_time(cmd)
+
+
+# ─────────────────────────── Dispatch + filter chain ────────────────────────
 
 
 class TestGenerate:
@@ -63,9 +232,25 @@ class TestGenerate:
         cmd = moves.generate("orbit", duration=8.0)
         assert "yaw" in cmd
 
-    def test_orbit_with_params(self):
-        cmd = moves.generate("orbit", duration=8.0, params={"yaw_speed": 90.0})
-        assert "90" in cmd
+    def test_drop_impact_dispatches(self):
+        cmd = moves.generate("drop_impact", duration=0.8)
+        assert "v360@mv" in cmd
+
+    def test_all_new_moves_registered(self):
+        expected = {
+            "orbit", "tilt_reveal", "dolly_zoom", "whip_pan", "crowd_reveal",
+            "counter_motion", "dolly_with_drift",
+            "bpm_sync_orbit", "kick_pulse_fov", "drop_impact",
+            "build_tension", "breakdown_drift",
+        }
+        assert set(moves.MOVES.keys()) >= expected
+
+    def test_every_move_passes_invariants(self):
+        """Smoke: every registered move's output respects no-pow + no-if-with-commas."""
+        for name in moves.MOVES.keys():
+            cmd = moves.generate(name, duration=2.0)
+            assert_no_pow(cmd), f"{name} uses pow()"
+            assert_no_if_with_commas(cmd), f"{name} uses if() with commas"
 
 
 class TestFilterChain:

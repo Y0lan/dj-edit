@@ -1,0 +1,30 @@
+{
+  "name": "clean",
+  "description": "Cinematic, slower moves, longer reveals, no whip-pans",
+  "move_pools": {
+    "breakdown": [
+      {"name": "breakdown_drift", "weight": 5},
+      {"name": "crowd_reveal", "weight": 4},
+      {"name": "tilt_reveal", "weight": 3},
+      {"name": "orbit", "weight": 2}
+    ],
+    "build": [
+      {"name": "dolly_with_drift", "weight": 4},
+      {"name": "dolly_zoom", "weight": 3},
+      {"name": "build_tension", "weight": 2}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 3},
+      {"name": "dolly_zoom", "weight": 2}
+    ],
+    "peak": [
+      {"name": "bpm_sync_orbit", "weight": 4},
+      {"name": "orbit", "weight": 3},
+      {"name": "counter_motion", "weight": 2}
+    ],
+    "lull": [
+      {"name": "orbit", "weight": 3},
+      {"name": "crowd_reveal", "weight": 2}
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "rinse",
+  "description": "UK pirate-radio handheld feel — counter-motion always, lots of crowd reveals, organic chaos",
+  "move_pools": {
+    "breakdown": [
+      {"name": "counter_motion", "weight": 5},
+      {"name": "crowd_reveal", "weight": 4}
+    ],
+    "build": [
+      {"name": "counter_motion", "weight": 4},
+      {"name": "dolly_with_drift", "weight": 3}
+    ],
+    "drop": [
+      {"name": "drop_impact", "weight": 4},
+      {"name": "whip_pan", "weight": 3}
+    ],
+    "peak": [
+      {"name": "counter_motion", "weight": 5},
+      {"name": "bpm_sync_orbit", "weight": 3},
+      {"name": "crowd_reveal", "weight": 2}
+    ]
+  }
+}

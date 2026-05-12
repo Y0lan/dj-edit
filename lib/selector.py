@@ -91,8 +91,164 @@ def framing_for_event(event_type: str, sequence_index: int = 0) -> str:
         return "wide"
     if event_type == "hook":
         return "tight"
-    # Lull / fallback
     return "medium"
+
+
+# ─────────────────────────── Move pools (Tier D) ───────────────────────────
+# Each event type maps to a weighted pool of Insta360 move names. Weights are
+# baseline preferences; --style and --reference packs can override them.
+# Last 3 picks are tracked to avoid immediate repetition (see pick_move_for_event).
+
+MOVE_POOLS_DEFAULT = {
+    "breakdown": [
+        ("breakdown_drift", 3),
+        ("orbit", 2),
+        ("crowd_reveal", 2),
+        ("tilt_reveal", 1),
+        ("counter_motion", 2),
+    ],
+    "build": [
+        ("build_tension", 4),
+        ("dolly_zoom", 2),
+        ("dolly_with_drift", 2),
+        ("kick_pulse_fov", 1),
+    ],
+    "drop": [
+        ("drop_impact", 5),
+        ("whip_pan", 1),
+    ],
+    "peak": [
+        ("bpm_sync_orbit", 3),
+        ("kick_pulse_fov", 2),
+        ("orbit", 2),
+        ("counter_motion", 1),
+    ],
+    "lull": [
+        ("orbit", 2),
+        ("crowd_reveal", 1),
+        ("bpm_sync_orbit", 1),
+    ],
+    "hook": [
+        ("dolly_with_drift", 3),
+        ("counter_motion", 1),
+    ],
+}
+
+
+def pick_move_for_event(event_type: str, intensity: float = 0.5,
+                        rng=None, recent_picks: list[str] | None = None,
+                        pool_override: dict | None = None) -> str:
+    """Weighted pick from MOVE_POOLS, with avoid-immediate-repetition.
+
+    - intensity in [0,1] biases toward "bigger" moves (drop_impact, build_tension,
+      bpm_sync_orbit) when high. Low intensity biases toward subtle moves.
+    - recent_picks: last N move names; the current pick will avoid them if possible.
+    - pool_override: optional dict from a --style or --reference pack to replace
+      the default pool for this event type.
+
+    Returns a move name from MOVES.
+    """
+    import random
+    if rng is None:
+        rng = random.Random()
+    pools = pool_override if pool_override is not None else MOVE_POOLS_DEFAULT
+    pool = pools.get(event_type) or MOVE_POOLS_DEFAULT.get(event_type)
+    if not pool:
+        return "orbit"
+    recent = set(recent_picks or [])
+    # Intensity-biased weights — "big" moves get a boost when intensity is high
+    BIG_MOVES = {"drop_impact", "build_tension", "bpm_sync_orbit", "whip_pan", "kick_pulse_fov"}
+    weighted = []
+    for name, base_w in pool:
+        w = float(base_w)
+        if name in BIG_MOVES:
+            w *= 0.5 + intensity  # 0.5x at intensity=0, 1.5x at intensity=1
+        if name in recent:
+            w *= 0.2  # heavy penalty for immediate repeat
+        weighted.append((name, w))
+    total = sum(w for _, w in weighted)
+    if total <= 0:
+        return pool[0][0]
+    r = rng.random() * total
+    acc = 0.0
+    for name, w in weighted:
+        acc += w
+        if r <= acc:
+            return name
+    return pool[-1][0]
+
+
+def load_pool_overrides(style: str | None = None,
+                        reference: str | None = None,
+                        presets_root: str = "presets",
+                        valid_moves: set | None = None) -> dict | None:
+    """Load style and/or reference JSON files, merge their move pools.
+
+    Reference overrides style; style overrides default. Returns None if neither
+    is given.
+
+    Warns to stderr (NOT silent):
+      - missing pack file (typo in --style/--reference)
+      - malformed JSON
+      - pool entry referencing a move not in `valid_moves`
+
+    `valid_moves` should be set(MOVES.keys()) from lib.moves for validation.
+    """
+    import json
+    import sys as _sys
+    from pathlib import Path
+
+    root = Path(presets_root)
+    merged: dict[str, list] = {}
+    for kind, name in (("styles", style), ("references", reference)):
+        if not name:
+            continue
+        p = root / kind / f"{name}.json"
+        if not p.exists():
+            print(f"WARN: {kind[:-1]} pack '{name}' not found at {p} — "
+                  f"using built-in defaults", file=_sys.stderr)
+            continue
+        try:
+            data = json.loads(p.read_text())
+        except json.JSONDecodeError as e:
+            print(f"WARN: {kind[:-1]} pack '{name}' is malformed JSON ({e}) — "
+                  f"using built-in defaults", file=_sys.stderr)
+            continue
+        except OSError as e:
+            print(f"WARN: {kind[:-1]} pack '{name}' could not be read ({e})",
+                  file=_sys.stderr)
+            continue
+        pack_pools = data.get("move_pools", {})
+        if not isinstance(pack_pools, dict):
+            print(f"WARN: {kind[:-1]} pack '{name}' has invalid move_pools shape",
+                  file=_sys.stderr)
+            continue
+        for event_type, pool in pack_pools.items():
+            validated = []
+            for m in pool:
+                mname = m.get("name") if isinstance(m, dict) else None
+                if not mname:
+                    continue
+                weight = float(m.get("weight", 1))
+                if weight <= 0:
+                    print(f"WARN: {kind[:-1]}/{name}: zero/negative weight for "
+                          f"'{mname}' in {event_type} — skipping", file=_sys.stderr)
+                    continue
+                if valid_moves is not None and mname not in valid_moves:
+                    print(f"WARN: {kind[:-1]}/{name}: '{mname}' is not a known "
+                          f"move (in {event_type}) — skipping", file=_sys.stderr)
+                    continue
+                validated.append((mname, weight))
+            if validated:
+                merged[event_type] = validated
+            else:
+                # All entries failed validation — distinct from "key absent"
+                print(f"WARN: {kind[:-1]}/{name}: event '{event_type}' "
+                      f"has zero valid moves after filter; using built-in pool",
+                      file=_sys.stderr)
+        print(f"[edl] loaded {kind[:-1]} pack '{name}' "
+              f"({len(merged)} event types)", file=_sys.stderr)
+    return merged if merged else None
 
 
 def build_crop_filter(framing: str, src_w: int, src_h: int,
