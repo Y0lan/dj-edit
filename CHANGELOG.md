@@ -1,14 +1,37 @@
 # Changelog
 
+All notable changes to dj-edit are documented here.
+
 ## [0.1.3] — 2026-05-12
 
-fix quickstart --demo: bake audio into demo video + sharpen drop transient
+Second friend-feedback patch. `dj-edit quickstart --demo` now actually completes
+end-to-end with a detected drop and a rendered per-drop clip.
 
-### Changed
-- (auto-generated — edit before publishing if needed)
+### Fixed
+- **`demo_video.mp4` had no audio track**. `dj-edit sync` requires camera scratch
+  audio to cross-correlate against the master — without it, no offsets, empty
+  EDL, zero clips. Fix: bake the demo audio INTO the demo video so sync resolves
+  trivially.
+- **Synthesized drop didn't trigger detection**. The previous demo "drop" at
+  t=15s was a slow volume ramp, which librosa's `onset_strength` saw as nothing
+  remarkable. Fix: regenerate `demo_audio.wav` with a sharp sub-bass impact at
+  t=15s plus a noise impulse for the onset trigger. Analyze now finds:
+  `build @ 7s + drop @ 15s (intensity 1.0)`.
 
+### Result
+`dj-edit quickstart --demo` now produces in 8.6s:
+- `set_9x16.mp4` + `set_16x9.mp4` (full 30s timeline)
+- `highlight_9x16.mp4` (drop reel)
+- `drops/drop_01_t00m15s_int100.mp4` (timestamp + intensity in filename)
+- `drops/INDEX.txt` (tracklist)
 
-All notable changes to dj-edit are documented here.
+A proper smoke test of the install.
+
+### Upgrade
+
+```
+brew upgrade dj-edit
+```
 
 ## [0.1.2] — 2026-05-12
 
