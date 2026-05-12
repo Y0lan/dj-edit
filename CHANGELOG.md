@@ -1,14 +1,33 @@
 # Changelog
 
+All notable changes to dj-edit are documented here.
+
 ## [0.1.1] — 2026-05-12
 
-render cache + 41 pytest unit tests + CI matrix
+Quality + resilience pass. No new user-facing features; faster re-runs and confidence in correctness.
 
-### Changed
-- (auto-generated — edit before publishing if needed)
+### Added
+- **Output-level render cache** in `bin/render.sh`. Keyed on `sha256(canonical_edl_json)`.
+  Re-runs with the same EDL skip the encode entirely and copy from cache (<1s vs 25-40 min).
+- **41 pytest unit tests** across `lib/treatments`, `lib/selector`, `lib/moves`, and
+  `bin/sync-cameras.robust_offset`. Catches regressions in pure logic without needing
+  real video fixtures.
+- **GitHub Actions CI**: matrix on `ubuntu-latest` + `macos-latest` × Python 3.11/3.12.
+  Runs pytest, bash/python syntax checks, and `dj-edit quickstart --demo` smoke test.
+- **`scripts/release.sh`** one-command release helper. Bumps version, tags, creates
+  GitHub release, computes tarball SHA256, updates the brew formula in the tap.
 
+### Fixed
+- `robust_offset` in `bin/sync-cameras.py` now takes optional `cam_dur` to filter out
+  clipping-at-master-end artifacts more aggressively. Caught by `test_sync_helpers.py`.
+- Attempted a per-chunk render cache approach for mid-render resume, but reverted due to
+  3-5x slowdown vs monolithic (per-chunk decode setup on a 64GB source doesn't share work).
+  Output-level cache is the cleaner solution for the common iteration case.
 
-All notable changes to dj-edit are documented here.
+### Notes
+- v0.2 will add: per-camera LUTs (color match), Songrec track-ID burn-in, `--style`
+  knob that actually changes pacing, watermark + endcard. See `lexical-percolating-bee.md`
+  in the plan archive for full backlog.
 
 ## [0.1.0] — 2026-05-12
 

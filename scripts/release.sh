@@ -140,16 +140,15 @@ run git push origin "v$VERSION"
 # ── Create GitHub release ──
 step "Creating GitHub release"
 if [ "$DRY_RUN" = "0" ]; then
-    gh release create "v$VERSION" \
-        --title "v$VERSION — $SUMMARY" \
-        --notes "$(awk -v ver="$VERSION" '
-            /^## \[/ {
-                if (printing) exit
-                if (index(\$0, "[" ver "]")) printing = 1
-                next
-            }
-            printing { print }
-        ' "$REPO_ROOT/CHANGELOG.md" | sed '/./,$!d' | sed -e :a -e '/^\n*$/{$d;N;ba' -e '}')"
+    # Extract the [VERSION] section from CHANGELOG.md (next ## heading terminates)
+    NOTES=$(awk -v ver="[$VERSION]" '
+        /^## / {
+            if (in_section) exit
+            if (index($0, ver)) { in_section = 1; next }
+        }
+        in_section { print }
+    ' "$REPO_ROOT/CHANGELOG.md")
+    gh release create "v$VERSION" --title "v$VERSION — $SUMMARY" --notes "$NOTES"
 else
     echo "  + gh release create v$VERSION"
 fi
