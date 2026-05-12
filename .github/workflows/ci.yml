@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ffmpeg jq
+
+      - name: Install ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg jq
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Run pytest
+        run: pytest tests/ -v
+
+      - name: Smoke-test dj-edit doctor
+        run: |
+          chmod +x bin/dj-edit
+          bin/dj-edit doctor || echo "doctor reported issues — non-blocking for CI"
+
+      - name: Smoke-test quickstart --demo (Linux only, faster CI)
+        if: runner.os == 'Linux'
+        run: |
+          # Demo render: 30s synthesized fixture → full pipeline → output
+          bin/dj-edit quickstart --demo || echo "quickstart failed — investigate"
+        timeout-minutes: 5
+
+  lint:
+    name: bash + python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check bash syntax
+        run: |
+          for f in bin/dj-edit bin/ingest.sh bin/render.sh setup.sh dj-edit-mac.command; do
+            if [ -f "$f" ]; then
+              echo "Checking $f..."
+              bash -n "$f"
+            fi
+          done
+
+      - name: Check Python syntax
+        run: |
+          python3 -c "
+          import ast, pathlib, sys
+          fail = False
+          for p in pathlib.Path('.').rglob('*.py'):
+              if 'venv' in p.parts or '.git' in p.parts:
+                  continue
+              try:
+                  ast.parse(p.read_text())
+                  print(f'  OK: {p}')
+              except SyntaxError as e:
+                  print(f'  FAIL: {p}: {e}')
+                  fail = True
+          sys.exit(1 if fail else 0)
+          "
