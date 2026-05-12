@@ -1,14 +1,30 @@
 # Changelog
 
+All notable changes to dj-edit are documented here.
+
 ## [0.1.2] — 2026-05-12
 
-fix doctor false-positive + brew formula /Applications crash
+First friend-feedback patch. Two real bugs hit on macOS install.
 
-### Changed
-- (auto-generated — edit before publishing if needed)
+### Fixed
+- **Brew install crash on `/Applications`**. The formula tried to write
+  `dj-edit-mac.command` directly to `/Applications` via Ruby's `File.write`,
+  which fails inside brew's install sandbox. Friend had to manually patch
+  the formula to skip that step. Fix: install the .command into `share/`
+  only; `caveats` instruct the user to copy it to `/Applications` themselves
+  (one extra `cp` line, but no install crash).
+- **Doctor false-positive on filter detection**. Friend's `dj-edit doctor`
+  reported `loudnorm` (and earlier `drawtext`) as missing even though
+  `ffmpeg -filters | grep loudnorm` showed them present. Root cause: the
+  regex `^ ?[.TS]+ +<name> +` was sensitive to ffmpeg's leading-whitespace
+  pattern, which varies across versions/builds. Fix: parse column 2
+  directly with awk (`$2 == filter_name`). Same fix on the encoder check.
 
+### Upgrade for existing users
 
-All notable changes to dj-edit are documented here.
+```
+brew upgrade dj-edit
+```
 
 ## [0.1.1] — 2026-05-12
 
