@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.0] — 2026-05-12
+
+Tier A eased moves + Tier B music-driven moves + Tier D move pools (with codex-loop hardening)
+
+### Changed
+- (auto-generated — edit before publishing if needed)
+
+
 All notable changes to dj-edit are documented here.
 
 ## [0.1.3] — 2026-05-12
