@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1] — 2026-05-12
+
+render cache + 41 pytest unit tests + CI matrix
+
+### Changed
+- (auto-generated — edit before publishing if needed)
+
+
 All notable changes to dj-edit are documented here.
 
 ## [0.1.0] — 2026-05-12
