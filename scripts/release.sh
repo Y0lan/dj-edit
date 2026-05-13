@@ -92,35 +92,38 @@ run sed -i.bak -E "s/^version = \"[^\"]+\"/version = \"$VERSION\"/" "$REPO_ROOT/
 rm -f "$REPO_ROOT/pyproject.toml.bak"
 echo "  pyproject.toml -> $VERSION"
 
-# ── Prepend a CHANGELOG entry ──
+# ── Prepend a CHANGELOG entry (only if not already present) ──
 step "Updating CHANGELOG.md"
-DATE="$(date +%Y-%m-%d)"
-NEW_ENTRY="## [$VERSION] — $DATE
+if grep -q "^## \[$VERSION\]" "$REPO_ROOT/CHANGELOG.md"; then
+    echo "  CHANGELOG.md already has a [$VERSION] entry — skipping auto-insert + review."
+else
+    DATE="$(date +%Y-%m-%d)"
+    NEW_ENTRY="## [$VERSION] — $DATE
 
 $SUMMARY
 
 ### Changed
 - (auto-generated — edit before publishing if needed)
 "
-if [ "$DRY_RUN" = "0" ]; then
-    # Insert after the first '# Changelog' header
-    awk -v entry="$NEW_ENTRY" '
-        /^# Changelog/ && !inserted {
-            print
-            print ""
-            print entry
-            inserted = 1
-            next
-        }
-        { print }
-    ' "$REPO_ROOT/CHANGELOG.md" > "$REPO_ROOT/CHANGELOG.md.tmp"
-    mv "$REPO_ROOT/CHANGELOG.md.tmp" "$REPO_ROOT/CHANGELOG.md"
-    echo "  CHANGELOG.md ← new entry for v$VERSION"
-    echo ""
-    echo "  Review and edit CHANGELOG.md now if you want, then press ENTER (or ^C to abort)"
-    read -r _
-else
-    echo "  + would prepend v$VERSION entry"
+    if [ "$DRY_RUN" = "0" ]; then
+        awk -v entry="$NEW_ENTRY" '
+            /^# Changelog/ && !inserted {
+                print
+                print ""
+                print entry
+                inserted = 1
+                next
+            }
+            { print }
+        ' "$REPO_ROOT/CHANGELOG.md" > "$REPO_ROOT/CHANGELOG.md.tmp"
+        mv "$REPO_ROOT/CHANGELOG.md.tmp" "$REPO_ROOT/CHANGELOG.md"
+        echo "  CHANGELOG.md ← new entry for v$VERSION"
+        echo ""
+        echo "  Review and edit CHANGELOG.md now if you want, then press ENTER (or ^C to abort)"
+        read -r _
+    else
+        echo "  + would prepend v$VERSION entry"
+    fi
 fi
 
 # ── Commit + tag + push ──

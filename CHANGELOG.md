@@ -2,6 +2,65 @@
 
 All notable changes to dj-edit are documented here.
 
+## [0.3.0] — 2026-05-13
+
+Content-aware Insta360 reveals + GUI wrapper. v0.2 hardcoded yaw targets,
+so reveals had a coin-flip chance of pointing at the DJ booth versus a wall.
+v0.3 scores Insta360 ERP footage frame-by-frame for motion + brightness and
+points camera moves at the actual content.
+
+### Added
+
+- **`bin/score-360.py` — content-aware Insta360 yaw scoring.** Samples
+  source frames at 1 fps in grayscale, slices into 8 horizontal yaw segments
+  (45° each), and emits per-segment motion + brightness scores to
+  `sphere_score.json`. Single-pipe ffmpeg → numpy, near-constant memory.
+- **`lib/sphere.py:best_yaw_at`** — pure helper that queries `sphere_score`
+  at a given source-local time and returns the yaw with highest weighted
+  motion + brightness. Returns `None` on all-zero windows so callers fall
+  back to move defaults. ERP-circular smoothing pools seam-adjacent
+  segments so subjects straddling 337.5/22.5° aren't dropped.
+- **`start_yaw` parameter on `orbit`, `crowd_reveal`, `bpm_sync_orbit`,
+  `breakdown_drift`** — content-aware anchoring. Default `start_yaw=0`
+  preserves v0.2 behavior byte-identically.
+- **`start_yaw` + shortest-path delta on `drop_impact`** — a target yaw of
+  337.5° now whips -22.5° (the short way) instead of spinning 337.5°.
+- **Enhanced `dj-edit-mac.command`** with launch menu (New / Re-edit recent /
+  Quick test / Demo / Doctor), style picker (signature / aggressive / clean),
+  reference picker (anyma / fisher / rinse), and a "quick test" mode that
+  renders only the highest-intensity drop (~3 min) before committing to a
+  full 30-50 min render. Recent projects saved at `~/.dj-edit-recent`.
+- `dj-edit score-360` subcommand (placeholder shipped in v0.2.1, now backed
+  by real implementation).
+
+### Fixed — codex round 1 (HIGH severity)
+
+- **`build-edl.py` was querying `sphere_score` with master-timeline time but
+  frames are source-local.** Multi-Insta360 setups also always read
+  `source_index=0`. Now passes `source_t=src_in` and
+  `source_path=finfo["path"]` so each clip resolves to its own source at the
+  right time.
+- **`drop_impact` whipped the long way around** when `target_yaw > 180°`.
+  Now computes a signed shortest-path delta in [-180, 180] and animates
+  `start_yaw + delta * progress`.
+
+### Fixed — codex round 1 (MEDIUM severity)
+
+- **`score-360.py` stderr=PIPE could deadlock** on long sources where ffmpeg
+  emits decode warnings faster than Python reads stdout. Switched to
+  `DEVNULL` and added `-nostdin -hide_banner -nostats`.
+- **`sphere.best_yaw_at` returned arbitrary yaw=22.5° on all-zero/black
+  windows.** Now returns `None` and the caller falls back to the move's
+  default yaw.
+- **`score-360.py` now emits `source_path` (project-relative)** alongside
+  basename, so multi-source matching in `build-edl.py` works.
+
+### Upgrade
+
+```
+brew upgrade dj-edit
+```
+
 ## [0.2.1] — 2026-05-13
 
 Third friend-feedback patch. He ran `dj-edit run` on his real footage and
