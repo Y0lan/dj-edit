@@ -18,6 +18,7 @@ from lib.selector import (
     pick_move_for_event, load_pool_overrides,
 )
 from lib import moves as moves_lib
+from lib import sphere as sphere_lib
 
 
 def nearest_beat(t: float, beats: list[float], window: float = 0.2) -> float:
@@ -88,28 +89,55 @@ def _generate_move_cmd(project: Path, aspect: str, move_name: str, duration: flo
     the same `cmds/move_NNNN_<name>.cmd` filenames (clip_index_counter resets
     per build() call).
 
+    target_yaw (v0.3) — when sphere_score yields a content-aware yaw, the
+    caller passes it here. Used by drop_impact directly; used as start_yaw
+    on orbit / crowd_reveal / bpm_sync_orbit / breakdown_drift.
+
     For Tier B moves that need BPM, pass it as a kwarg. Others ignore it.
     """
     cmds_dir = project / "cmds" / aspect
     cmds_dir.mkdir(parents=True, exist_ok=True)
     cmd_path = cmds_dir / f"move_{clip_index:04d}_{move_name}.cmd"
 
-    # Move-specific params keyed off the event context.
-    # Intensity is clamped to [0, 1] here so downstream math doesn't go negative
-    # or above 1 from unsanitized event values.
     intensity = max(0.0, min(1.0, float(intensity)))
     params = {}
+
+    # Default yaw — used when caller didn't pass a content-aware one
+    content_yaw = float(target_yaw) if target_yaw is not None else None
+
     if move_name == "bpm_sync_orbit":
         params = {"bpm": bpm, "bars_per_rotation": 4}
+        if content_yaw is not None:
+            params["start_yaw"] = content_yaw
     elif move_name == "kick_pulse_fov":
         params = {"bpm": bpm, "amp": 2 + intensity * 4}
+        if content_yaw is not None:
+            params["yaw"] = content_yaw
     elif move_name == "drop_impact":
         # `is None` check, NOT `or 60.0` — target_yaw=0.0 is a valid explicit yaw.
-        params = {"target_yaw": 60.0 if target_yaw is None else float(target_yaw)}
+        params = {"target_yaw": 60.0 if content_yaw is None else content_yaw}
     elif move_name == "build_tension":
         params = {"fov_start": 95, "fov_end": 55 + (1 - intensity) * 10}
     elif move_name == "breakdown_drift":
         params = {"yaw_speed": 8.0, "pitch_end": -12.0}
+        if content_yaw is not None:
+            params["start_yaw"] = content_yaw
+    elif move_name == "orbit":
+        if content_yaw is not None:
+            params["start_yaw"] = content_yaw
+    elif move_name == "crowd_reveal":
+        if content_yaw is not None:
+            params["start_yaw"] = content_yaw
+    elif move_name == "tilt_reveal":
+        if content_yaw is not None:
+            params["yaw"] = content_yaw
+    elif move_name == "dolly_zoom":
+        if content_yaw is not None:
+            params["yaw"] = content_yaw
+    elif move_name == "dolly_with_drift":
+        # uses yaw_drift FROM start; if content yaw is provided we can't
+        # easily wire it (function uses yaw=0 baseline). Leave default.
+        pass
 
     cmd_text = moves_lib.generate(move_name, duration, params)
     cmd_path.write_text(cmd_text + "\n")
@@ -153,13 +181,29 @@ def build(project: Path, aspect: str, target_fps: int,
     bpm = float(beats_data.get("tempo", 128.0)) or 128.0
 
     # Tier D: load move-pool overrides from --style / --reference packs.
-    # Pass MOVES set so the loader can warn on pack entries referencing
-    # non-existent move names (avoids silent fallback to orbit at render time).
     presets_root = str(Path(__file__).resolve().parent.parent / "presets")
     pool_override = load_pool_overrides(
         style=style, reference=reference, presets_root=presets_root,
         valid_moves=set(moves_lib.MOVES.keys()),
     )
+
+    # v0.3: content-aware sphere scoring (Insta360 only). If sphere_score.json
+    # exists, each Insta360 clip's move gets a target_yaw from the dominant
+    # content segment at that master_t. Absent file = fall back to hardcoded
+    # yaw defaults (degrades gracefully on single-cam / no-Insta360 setups).
+    sphere_score = None
+    sphere_path = project / "sphere_score.json"
+    if sphere_path.exists():
+        try:
+            sphere_score = json.loads(sphere_path.read_text())
+            n_sources = len(sphere_score.get("sources", []))
+            if n_sources > 0:
+                print(f"[edl] sphere_score loaded ({n_sources} Insta360 source(s))",
+                      file=sys.stderr)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"WARN: sphere_score.json unreadable ({e}) — Insta360 moves "
+                  f"will use default yaws", file=sys.stderr)
+            sphere_score = None
     rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
     recent_moves: list[str] = []  # rolling window for avoid-repeat
 
@@ -200,10 +244,25 @@ def build(project: Path, aspect: str, target_fps: int,
                 recent_picks=recent_moves[-3:], pool_override=pool_override,
             )
             move = chosen_move
-            # Generate a per-clip .cmd file (Tier A + B math)
+
+            # v0.3: content-aware target_yaw from sphere_score (if available).
+            # `prefer` switches based on event type — drops want motion (where
+            # the crowd is going off); breakdowns want brightness (lights/lasers).
+            content_yaw = None
+            if sphere_score is not None:
+                prefer = "motion" if event_type in ("drop", "peak") else \
+                         "balanced" if event_type == "breakdown" else \
+                         "motion+brightness"
+                content_yaw = sphere_lib.best_yaw_at(
+                    sphere_score, master_t=c0, prefer=prefer,
+                    smooth_window=3, source_index=0,
+                )
+
+            # Generate a per-clip .cmd file (Tier A + B math + v0.3 content-aware yaw)
             try:
                 cmd_path = _generate_move_cmd(
                     project, aspect, chosen_move, dur, bpm, intensity,
+                    target_yaw=content_yaw,
                     clip_index=clip_index_counter[0],
                 )
             except (ValueError, OSError) as ex:
