@@ -260,3 +260,48 @@ class TestFilterChain:
         assert "v360@mv=input=e:output=flat" in chain
         assert "w=1080" in chain
         assert "h=1920" in chain
+
+
+# ─────────────────── Content-aware start_yaw (v0.3) ───────────────────
+
+
+class TestStartYawParam:
+    """The four moves that accept start_yaw should incorporate it into the
+    yaw expression. Default start_yaw=0 must preserve existing behavior."""
+
+    def test_orbit_with_start_yaw(self):
+        cmd = moves.orbit(duration=4.0, start_yaw=180.0)
+        # start_yaw should appear as a literal offset
+        assert "180.0" in cmd
+        # Should still be a valid sendcmd (no commas in expressions)
+        assert_no_if_with_commas(cmd)
+        assert_no_pow(cmd)
+
+    def test_orbit_default_start_yaw_unchanged(self):
+        # start_yaw=0 should be functionally equivalent to no-arg orbit
+        default_cmd = moves.orbit(duration=4.0)
+        zero_cmd = moves.orbit(duration=4.0, start_yaw=0.0)
+        # Functional content should be the same (allowing whitespace tweaks)
+        assert default_cmd == zero_cmd
+
+    def test_crowd_reveal_with_start_yaw(self):
+        cmd = moves.crowd_reveal(duration=6.0, start_yaw=90.0)
+        assert "90.0" in cmd
+        assert_no_if_with_commas(cmd)
+
+    def test_bpm_sync_orbit_with_start_yaw(self):
+        cmd = moves.bpm_sync_orbit(duration=10.0, bpm=128.0, start_yaw=270.0)
+        assert "270.0" in cmd
+        assert "*T" in cmd  # still BPM-driven
+
+    def test_breakdown_drift_with_start_yaw(self):
+        cmd = moves.breakdown_drift(duration=12.0, start_yaw=45.0)
+        assert "45.0" in cmd
+        # Should preserve the existing yaw_speed * T component
+        assert "8.0*T" in cmd or "8*T" in cmd
+
+    def test_zero_duration_with_start_yaw_doesnt_crash(self):
+        cmd = moves.orbit(duration=0.0, start_yaw=180.0)
+        assert "v360@mv" in cmd
+        # Even at zero duration, start_yaw should be honored
+        assert "180" in cmd

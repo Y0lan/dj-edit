@@ -33,20 +33,21 @@ def _entry(t0: float, t1: float, param: str, expr: str) -> str:
 
 
 def orbit(duration: float, yaw_speed: float = 45.0, pitch: float = -5.0,
-          h_fov: float = 90.0, ease: bool = True) -> str:
-    """Continuous yaw rotation. yaw_speed in deg/sec.
+          h_fov: float = 90.0, ease: bool = True, start_yaw: float = 0.0) -> str:
+    """Continuous yaw rotation from `start_yaw` over `duration` seconds.
 
-    ease=True uses S-curve so velocity ramps in/out (same total angle).
-    Total angle covered = yaw_speed * duration in both modes.
+    yaw_speed in deg/sec. Total angle covered = yaw_speed * duration.
+
+    start_yaw is content-aware (v0.3+): set by sphere_score lookup so the
+    rotation BEGINS at the interesting region instead of always at yaw 0.
     """
     if duration <= 0:
-        return _entry(0.0, 0.01, "yaw", "0")
+        return _entry(0.0, 0.01, "yaw", f"{start_yaw}")
     total = yaw_speed * duration
     if ease:
-        # Cosine ease-in-out: 0 → total over [0, duration]
-        yaw_expr = f"{total}*((1-cos(PI*T/{duration:.4f}))/2)"
+        yaw_expr = f"{start_yaw}+{total}*((1-cos(PI*T/{duration:.4f}))/2)"
     else:
-        yaw_expr = f"{yaw_speed}*T"
+        yaw_expr = f"{start_yaw}+{yaw_speed}*T"
     return "\n".join([
         _entry(0, duration, "yaw", yaw_expr),
         _entry(0, duration, "pitch", f"{pitch}"),
@@ -105,14 +106,18 @@ def whip_pan(duration: float, yaw_speed: float = 900.0,
 
 def crowd_reveal(duration: float, yaw_speed: float = 20.0,
                  fov_start: float = 70.0, fov_end: float = 110.0,
-                 pitch: float = -10.0) -> str:
-    """Slow yaw + h_fov widen + subtle pitch sway."""
+                 pitch: float = -10.0, start_yaw: float = 0.0) -> str:
+    """Slow yaw + h_fov widen + subtle pitch sway, starting from start_yaw.
+
+    Content-aware: start_yaw is the yaw of the crowd/dancefloor segment
+    (from sphere_score). Camera reveals OUT from there as the fov widens.
+    """
     if duration <= 0:
         return _entry(0.0, 0.01, "h_fov", f"{fov_end}")
     fov_rate = (fov_end - fov_start) / duration
     pitch_expr = f"{pitch}+2*sin(2*PI*T/{duration:.4f})"
     return "\n".join([
-        _entry(0, duration, "yaw", f"{yaw_speed}*T"),
+        _entry(0, duration, "yaw", f"{start_yaw}+{yaw_speed}*T"),
         _entry(0, duration, "h_fov", f"{fov_start}+{fov_rate:.6f}*T"),
         _entry(0, duration, "pitch", pitch_expr),
     ])
@@ -160,16 +165,17 @@ def dolly_with_drift(duration: float, fov_start: float = 90.0,
 
 def bpm_sync_orbit(duration: float, bpm: float = 128.0,
                    bars_per_rotation: int = 4, pitch: float = -5.0,
-                   h_fov: float = 90.0) -> str:
-    """Yaw rotates one full turn per `bars_per_rotation` musical bars."""
+                   h_fov: float = 90.0, start_yaw: float = 0.0) -> str:
+    """Yaw rotates one full turn per `bars_per_rotation` musical bars,
+    starting from start_yaw (content-aware in v0.3+)."""
     if duration <= 0:
-        return _entry(0.0, 0.01, "yaw", "0")
+        return _entry(0.0, 0.01, "yaw", f"{start_yaw}")
     safe_bpm = max(float(bpm), 30.0)
     bar_duration = 60.0 / safe_bpm * 4
     rotation_duration = bar_duration * max(int(bars_per_rotation), 1)
     yaw_speed = 360.0 / rotation_duration
     return "\n".join([
-        _entry(0, duration, "yaw", f"{yaw_speed:.6f}*T"),
+        _entry(0, duration, "yaw", f"{start_yaw}+{yaw_speed:.6f}*T"),
         _entry(0, duration, "pitch", f"{pitch}"),
         _entry(0, duration, "h_fov", f"{h_fov}"),
     ])
@@ -250,15 +256,17 @@ def build_tension(duration: float, fov_start: float = 95.0,
 
 def breakdown_drift(duration: float, yaw_speed: float = 8.0,
                     pitch_start: float = 0.0, pitch_end: float = -15.0,
-                    h_fov: float = 95.0) -> str:
-    """Floating breakdown — ultra-slow yaw + slow up-tilt + wide-ish fov."""
+                    h_fov: float = 95.0, start_yaw: float = 0.0) -> str:
+    """Floating breakdown — ultra-slow yaw + slow up-tilt + wide-ish fov.
+
+    start_yaw (v0.3+) anchors the drift to a content-aware region.
+    """
     if duration <= 0:
-        return _entry(0.0, 0.01, "yaw", "0")
+        return _entry(0.0, 0.01, "yaw", f"{start_yaw}")
     pitch_delta = pitch_end - pitch_start
-    # Ease-out via sin(PI*T/(2*duration))
     pitch_expr = f"{pitch_start}+{pitch_delta}*sin(PI*T/{2*duration:.4f})"
     return "\n".join([
-        _entry(0, duration, "yaw", f"{yaw_speed}*T"),
+        _entry(0, duration, "yaw", f"{start_yaw}+{yaw_speed}*T"),
         _entry(0, duration, "pitch", pitch_expr),
         _entry(0, duration, "h_fov", f"{h_fov}"),
     ])
