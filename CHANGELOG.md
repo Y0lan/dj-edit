@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1] — 2026-05-13
+
+auto-open output folder after run + deliver — friend was lost without it
+
+### Changed
+- (auto-generated — edit before publishing if needed)
+
+
 All notable changes to dj-edit are documented here.
 
 ## [0.2.0] — 2026-05-12
