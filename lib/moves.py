@@ -199,14 +199,20 @@ def kick_pulse_fov(duration: float, bpm: float = 128.0,
 
 
 def drop_impact(duration: float = 0.8, target_yaw: float = 90.0,
+                start_yaw: float = 0.0,
                 fov_start: float = 110.0, fov_end: float = 65.0,
                 pitch: float = -5.0) -> str:
     """The drop preset — three time-windowed commands (NO nested-if commas).
 
-    Phase 1 [0, p1):    yaw=0, h_fov=fov_start.
-    Phase 2 [p1, p2):   yaw whips 0 → target, h_fov holds.
-    Phase 3 [p2, p3):   yaw holds target, h_fov dolly fov_start → fov_end.
-    Phase 4 [p3, end]:  hold target + fov_end.
+    Phase 1 [0, p1):    yaw=start_yaw, h_fov=fov_start.
+    Phase 2 [p1, p2):   yaw whips start_yaw → target_yaw via SHORTEST path,
+                        h_fov holds.
+    Phase 3 [p2, p3):   yaw holds target_yaw, h_fov dolly fov_start → fov_end.
+    Phase 4 [p3, end]:  hold target_yaw + fov_end.
+
+    Shortest-path delta: a target_yaw of 337.5° from start_yaw=0° should whip
+    -22.5° (counter-clockwise) not +337.5° (full spin). Computed as
+    `((target - start + 180) % 360) - 180`, which lands in [-180, 180].
     """
     if duration < 0.1:
         # Too short for choreography — just hold target.
@@ -220,11 +226,14 @@ def drop_impact(duration: float = 0.8, target_yaw: float = 90.0,
     p3 = duration * 0.7
     fov_delta = fov_end - fov_start
 
+    # Shortest-path yaw delta in [-180, 180]
+    delta_yaw = ((target_yaw - start_yaw + 540.0) % 360.0) - 180.0
+
     lines: list[str] = []
     # YAW phases
-    lines.append(_entry(0.0, p1, "yaw", "0"))
+    lines.append(_entry(0.0, p1, "yaw", f"{start_yaw}"))
     lines.append(_entry(p1, p2, "yaw",
-                        f"{target_yaw}*((T-{p1:.4f})/{(p2-p1):.6f})"))
+                        f"{start_yaw}+{delta_yaw}*((T-{p1:.4f})/{(p2-p1):.6f})"))
     lines.append(_entry(p2, duration, "yaw", f"{target_yaw}"))
     # PITCH static across all phases
     lines.append(_entry(0.0, duration, "pitch", f"{pitch}"))

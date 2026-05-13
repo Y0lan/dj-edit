@@ -40,37 +40,75 @@ def normalize_weights(prefer: str) -> tuple[float, float]:
     return (0.7, 0.3)
 
 
-def best_yaw_at(sphere_score: dict, master_t: float,
+def find_source(sphere_score: dict, source_path: str | None = None,
+                source_index: int = 0) -> dict | None:
+    """Return the matching source dict (by project-relative path, then basename,
+    then index fallback). Used by build-edl to pick the right Insta360 source.
+
+    Returns None if no source can be located.
+    """
+    sources = sphere_score.get("sources", [])
+    if not sources:
+        return None
+    if source_path:
+        # Match by source_path (project-relative, preferred)
+        for s in sources:
+            if s.get("source_path") == source_path:
+                return s
+        # Fallback: match by basename
+        import os
+        base = os.path.basename(source_path)
+        for s in sources:
+            if s.get("source") == base:
+                return s
+    if source_index < len(sources):
+        return sources[source_index]
+    return None
+
+
+def best_yaw_at(sphere_score: dict, master_t: float | None = None,
                 prefer: str = "motion+brightness",
                 smooth_window: int = 3,
-                source_index: int = 0) -> float | None:
-    """Return the yaw (degrees) with the highest weighted score at master_t.
+                source_index: int = 0,
+                source_t: float | None = None,
+                source_path: str | None = None,
+                min_score: float = 1e-6) -> float | None:
+    """Return the yaw (degrees) with the highest weighted score at the given time.
 
     Args:
       sphere_score: parsed JSON dict from sphere_score.json
-      master_t: time in seconds (master timeline). Frames are sampled at
-        1 fps so we round to the nearest integer second.
+      master_t: time in seconds. NOTE: name kept for back-compat. Treated as
+        source-local time when source_t is not provided. New callers should
+        prefer source_t (since sphere_score frames are source-local).
+      source_t: source-local time in seconds (preferred over master_t).
+        Frames are sampled at 1 fps so we round to the nearest integer.
       prefer: weighting between motion and brightness_var
         (see normalize_weights for accepted values).
-      smooth_window: number of consecutive sampled frames to average over.
-        Larger = more stable yaw choice but slower to react to scene change.
-        Default 3 → averages [t-1, t, t+1].
+      smooth_window: number of consecutive sampled frames to consider.
+        Default 3 → covers [t-1, t, t+1]. Window scoring uses MAX (not mean)
+        to emphasize peak activity within the window.
+      source_path: project-relative path of the Insta360 source to query.
+        If provided, takes precedence over source_index.
       source_index: which source in sphere_score['sources'] to query
-        (default 0). For multi-Insta360 projects, callers pick the right one.
+        (default 0). Ignored when source_path matches.
+      min_score: yaw scoring must exceed this for the result to count.
+        If the best segment scores below this, return None (caller falls back
+        to default yaw — avoids picking arbitrary yaw=22.5 on all-black or
+        static frames).
 
     Returns:
-      yaw in degrees [0, 360), or None if sphere_score is empty/invalid.
+      yaw in degrees [0, 360), or None if data is missing / all-zero.
     """
-    sources = sphere_score.get("sources", [])
-    if not sources or source_index >= len(sources):
+    src = find_source(sphere_score, source_path=source_path,
+                      source_index=source_index)
+    if src is None:
         return None
-    src = sources[source_index]
     frames = src.get("frames", [])
     if not frames:
         return None
 
     motion_w, bright_w = normalize_weights(prefer)
-    target_t = float(master_t)
+    target_t = float(source_t) if source_t is not None else float(master_t or 0)
     n = len(frames)
 
     # Find the frame index nearest target_t (frames are 1 fps so t == idx)
@@ -120,9 +158,25 @@ def best_yaw_at(sphere_score: dict, master_t: float,
 
     m_n = _norm(motion_max)
     b_n = _norm(brightness_max)
-    scores = [motion_w * m + bright_w * b for m, b in zip(m_n, b_n)]
+    raw_scores = [motion_w * m + bright_w * b for m, b in zip(m_n, b_n)]
+
+    # ERP-circular smoothing — segment 0 (yaw 22.5) and segment N-1 (yaw
+    # 337.5) are neighbors on the sphere. A subject straddling the seam
+    # would otherwise lose to a tighter non-seam segment. [0.25, 0.5, 0.25]
+    # cyclic kernel pools each segment with its two ERP-adjacent neighbors.
+    scores = [
+        0.25 * raw_scores[(i - 1) % seg_count]
+        + 0.5 * raw_scores[i]
+        + 0.25 * raw_scores[(i + 1) % seg_count]
+        for i in range(seg_count)
+    ]
 
     best_idx = max(range(seg_count), key=lambda i: scores[i])
+    # All-zero (or near-zero) window — black frame, static shot, or first
+    # frame only. Return None so the caller falls back to its move's default
+    # yaw instead of an arbitrary 22.5°.
+    if scores[best_idx] <= float(min_score):
+        return None
     return float(yaw_centers[best_idx])
 
 

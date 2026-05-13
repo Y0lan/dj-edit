@@ -13,8 +13,10 @@ for each Insta360 reveal — instead of hardcoding yaw=0 and risking pointing
 at a wall, the camera move now targets the yaw where motion or lighting is
 strongest at that moment.
 
-Single-decode pipe-to-Python approach: zero disk, ~500KB peak memory
-regardless of source length.
+Single-decode pipe-to-Python approach: zero disk for video pixels (only the
+current + previous frame are held in memory, ~1MB combined). The per-frame
+metadata list grows linearly with source length — at 1 fps × ~140 bytes/frame
+× 8 segments, a 90-minute source yields ~600KB of metadata.
 """
 from __future__ import annotations
 import argparse
@@ -33,19 +35,30 @@ SAMPLE_FPS = 1  # one frame per second of source
 BYTES_PER_FRAME = FRAME_W * FRAME_H  # grayscale, 1 byte per pixel
 
 
-def score_source(source_path: Path) -> dict:
+def score_source(source_path: Path, source_path_rel: str | None = None) -> dict:
     """Pipe sampled grayscale frames from ffmpeg through numpy.
 
+    Args:
+      source_path: absolute filesystem path to the ERP video file.
+      source_path_rel: project-relative path string as it appears in
+        manifest.json (e.g. "footage/insta360/foo.mp4"). build-edl.py uses
+        this to match the right sphere_score entry per Insta360 clip.
+
     Returns dict shaped:
-      {"source": "<filename>", "fps_sampled": 1, "n_frames": N,
+      {"source": "<basename>", "source_path": "<project-relative>",
+       "fps_sampled": 1, "n_frames": N,
        "frames": [{"t": float, "segments": [{"yaw_center", "motion", "brightness_var"}...]}, ...]}
+
+    stderr is sent to DEVNULL: with stderr=PIPE we deadlock on long sources
+    where ffmpeg emits decode warnings faster than Python reads stdout.
     """
     cmd = [
-        "ffmpeg", "-v", "error", "-i", str(source_path),
+        "ffmpeg", "-nostdin", "-hide_banner", "-nostats", "-v", "error",
+        "-i", str(source_path),
         "-vf", f"fps={SAMPLE_FPS},scale={FRAME_W}:{FRAME_H}:flags=fast_bilinear,format=gray",
         "-f", "rawvideo", "-pix_fmt", "gray", "pipe:1",
     ]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
 
     strip_w = FRAME_W // SEGMENT_COUNT  # 90 px per segment
     # yaw_center for segment s: center of the [s/N, (s+1)/N] strip in degrees.
@@ -85,12 +98,12 @@ def score_source(source_path: Path) -> dict:
 
     proc.stdout.close()
     rc = proc.wait()
-    err = proc.stderr.read().decode("utf-8", errors="replace")
     if rc != 0:
-        raise RuntimeError(f"ffmpeg failed on {source_path}: {err[:500]}")
+        raise RuntimeError(f"ffmpeg failed on {source_path} (exit {rc})")
 
     return {
         "source": source_path.name,
+        "source_path": source_path_rel or source_path.name,
         "fps_sampled": SAMPLE_FPS,
         "n_frames": len(frames),
         "frames": frames,
@@ -111,8 +124,10 @@ def main() -> int:
     proj = args.project
     out_path = args.out or (proj / "sphere_score.json")
 
+    # Build a list of (abs_path, project_relative_path) pairs to score.
+    sources: list[tuple[Path, str]] = []
     if args.source:
-        sources = [args.source]
+        sources.append((args.source, args.source.name))
     else:
         manifest_path = proj / "manifest.json"
         if not manifest_path.exists():
@@ -126,10 +141,12 @@ def main() -> int:
                   file=sys.stderr)
             out_path.write_text(json.dumps({"sources": []}, indent=2))
             return 0
-        sources = [proj / s["path"] for s in insta_list]
+        for s in insta_list:
+            rel = s["path"]  # project-relative path as stored in manifest
+            sources.append((proj / rel, rel))
 
     all_results = []
-    for src in sources:
+    for src, rel in sources:
         if not src.exists():
             cand = proj / "footage" / "insta360" / src.name
             if cand.exists():
@@ -139,7 +156,7 @@ def main() -> int:
                 continue
         print(f"[score-360] analyzing {src.name}...", file=sys.stderr)
         try:
-            result = score_source(src)
+            result = score_source(src, source_path_rel=rel)
             all_results.append(result)
             print(f"  scored {result['n_frames']} frames × {SEGMENT_COUNT} segments",
                   file=sys.stderr)

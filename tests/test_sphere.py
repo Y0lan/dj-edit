@@ -122,6 +122,108 @@ class TestBestYawAt:
         result = sphere.best_yaw_at(score, master_t=0, source_index=99)
         assert result is None
 
+    def test_all_zero_scores_returns_none(self):
+        """A black/static window should return None so the caller falls back
+        to the move's default yaw, not an arbitrary 22.5°. Codex finding."""
+        score = _make_sphere_score([
+            {0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0},
+            {0: 0.0, 90: 0.0, 180: 0.0, 270: 0.0},
+        ])
+        # Override brightness too so the test is unambiguous
+        for src in score["sources"]:
+            for f in src["frames"]:
+                for seg in f["segments"]:
+                    seg["brightness_var"] = 0.0
+        result = sphere.best_yaw_at(score, master_t=1.0, prefer="motion+brightness")
+        assert result is None
+
+    def test_source_path_matching(self):
+        """When multiple sources are scored, source_path picks the right one."""
+        # 4 segments so circular smoothing has real neighbors to pool
+        score = {"sources": [
+            {"source": "cam_a.mp4", "source_path": "footage/insta360/cam_a.mp4",
+             "frames": [{"t": 0.0, "segments": [
+                 {"yaw_center": 0, "motion": 0.0, "brightness_var": 0.0},
+                 {"yaw_center": 90, "motion": 10.0, "brightness_var": 5.0},
+                 {"yaw_center": 180, "motion": 0.0, "brightness_var": 0.0},
+                 {"yaw_center": 270, "motion": 0.0, "brightness_var": 0.0},
+             ]}]},
+            {"source": "cam_b.mp4", "source_path": "footage/insta360/cam_b.mp4",
+             "frames": [{"t": 0.0, "segments": [
+                 {"yaw_center": 0, "motion": 10.0, "brightness_var": 5.0},
+                 {"yaw_center": 90, "motion": 0.0, "brightness_var": 0.0},
+                 {"yaw_center": 180, "motion": 0.0, "brightness_var": 0.0},
+                 {"yaw_center": 270, "motion": 0.0, "brightness_var": 0.0},
+             ]}]},
+        ]}
+        # cam_a's hot yaw is 90; cam_b's is 0. Selecting by source_path
+        # should pick the right one.
+        assert sphere.best_yaw_at(score, source_t=0.0,
+                                  source_path="footage/insta360/cam_a.mp4",
+                                  prefer="motion") == 90.0
+        assert sphere.best_yaw_at(score, source_t=0.0,
+                                  source_path="footage/insta360/cam_b.mp4",
+                                  prefer="motion") == 0.0
+
+    def test_erp_seam_smoothing(self):
+        """Content split across the 337.5/22.5 seam should pool with its
+        circular neighbor — combined seam beats a stronger non-seam segment."""
+        # 8 segments: yaw_centers [22.5, 67.5, 112.5, 157.5, 202.5, 247.5, 292.5, 337.5]
+        # Seam (22.5 + 337.5) bins each have motion 6 → after pooling, segment 0
+        # gets 0.25*6 + 0.5*6 + 0.25*<other neighbor> ≈ 4.5 normalized.
+        # Non-seam segment 4 (yaw 202.5) has motion 8 (higher!), but no
+        # adjacent help. After pooling: 0.25*0 + 0.5*8 + 0.25*0 = 4.
+        # Without smoothing, segment 4 (202.5) would win.
+        # With ERP-circular smoothing, segment 0 (22.5) or 7 (337.5) wins.
+        score = {"sources": [{
+            "source": "x.mp4", "fps_sampled": 1, "n_frames": 2,
+            "frames": [
+                {"t": 0.0, "segments": [
+                    {"yaw_center": 22.5, "motion": 0.0, "brightness_var": 0.0},
+                ] * 8},
+                {"t": 1.0, "segments": [
+                    {"yaw_center": 22.5, "motion": 6.0, "brightness_var": 0.0},
+                    {"yaw_center": 67.5, "motion": 0.0, "brightness_var": 0.0},
+                    {"yaw_center": 112.5, "motion": 0.0, "brightness_var": 0.0},
+                    {"yaw_center": 157.5, "motion": 0.0, "brightness_var": 0.0},
+                    {"yaw_center": 202.5, "motion": 8.0, "brightness_var": 0.0},
+                    {"yaw_center": 247.5, "motion": 0.0, "brightness_var": 0.0},
+                    {"yaw_center": 292.5, "motion": 0.0, "brightness_var": 0.0},
+                    {"yaw_center": 337.5, "motion": 6.0, "brightness_var": 0.0},
+                ]},
+            ]
+        }]}
+        result = sphere.best_yaw_at(score, master_t=1.0, prefer="motion")
+        # Seam-pooled result should win
+        assert result in (22.5, 337.5), \
+            f"expected seam segment to win, got {result}"
+
+
+class TestFindSource:
+    def test_finds_by_path(self):
+        score = {"sources": [
+            {"source": "a.mp4", "source_path": "footage/insta360/a.mp4", "frames": []},
+            {"source": "b.mp4", "source_path": "footage/insta360/b.mp4", "frames": []},
+        ]}
+        found = sphere.find_source(score, source_path="footage/insta360/b.mp4")
+        assert found["source"] == "b.mp4"
+
+    def test_falls_back_to_basename(self):
+        score = {"sources": [
+            {"source": "b.mp4", "source_path": "old/path/b.mp4", "frames": []},
+        ]}
+        # Caller passed a different path containing the same basename
+        found = sphere.find_source(score, source_path="footage/insta360/b.mp4")
+        assert found["source"] == "b.mp4"
+
+    def test_falls_back_to_index_when_no_path(self):
+        score = {"sources": [
+            {"source": "a.mp4", "frames": []},
+            {"source": "b.mp4", "frames": []},
+        ]}
+        found = sphere.find_source(score, source_index=1)
+        assert found["source"] == "b.mp4"
+
 
 class TestCoverageSummary:
     def test_empty_returns_invalid(self):

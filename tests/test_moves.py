@@ -194,6 +194,31 @@ class TestDropImpact:
         # Should be a single static hold, not 4 phases
         assert "v360@mv" in cmd
 
+    def test_shortest_path_wraps_negative(self):
+        """target_yaw=337.5 with start_yaw=0 should whip -22.5° (short way),
+        not +337.5° (the long way around). Regression for codex finding."""
+        cmd = moves.drop_impact(duration=0.8, target_yaw=337.5)
+        # The whip-phase expression should multiply by -22.5, not 337.5
+        # (the linear-interp coefficient is the shortest-path delta).
+        # We can detect the negative delta by looking for "+-22.5" or "-22.5*"
+        assert "-22.5" in cmd, \
+            f"expected shortest-path delta -22.5, but cmd was:\n{cmd}"
+
+    def test_shortest_path_explicit_start_yaw(self):
+        """With start_yaw=350, target_yaw=10 → should whip +20° (not -340°)."""
+        cmd = moves.drop_impact(duration=0.8, target_yaw=10.0, start_yaw=350.0)
+        # delta = ((10 - 350 + 540) % 360) - 180 = (200 % 360) - 180 = 20
+        assert "20.0" in cmd or "20*" in cmd, \
+            f"expected shortest-path delta +20, but cmd was:\n{cmd}"
+
+    def test_start_yaw_appears_in_phase1(self):
+        """Phase 1 should hold start_yaw (not always 0)."""
+        cmd = moves.drop_impact(duration=0.8, target_yaw=180.0, start_yaw=90.0)
+        assert "90" in cmd  # start_yaw should appear in the cmd
+        # First yaw line should be the constant start_yaw
+        lines = [l for l in cmd.split("\n") if "yaw" in l and "pitch" not in l]
+        assert lines[0].rstrip(";").endswith("90.0") or "90" in lines[0]
+
 
 class TestBuildTension:
     def test_uses_t_times_t_not_pow(self):

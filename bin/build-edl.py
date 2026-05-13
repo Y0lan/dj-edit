@@ -115,6 +115,8 @@ def _generate_move_cmd(project: Path, aspect: str, move_name: str, duration: flo
             params["yaw"] = content_yaw
     elif move_name == "drop_impact":
         # `is None` check, NOT `or 60.0` — target_yaw=0.0 is a valid explicit yaw.
+        # start_yaw defaults to 0; shortest-path delta in moves.drop_impact
+        # handles wraparound so a target of 337.5° whips -22.5° not +337.5°.
         params = {"target_yaw": 60.0 if content_yaw is None else content_yaw}
     elif move_name == "build_tension":
         params = {"fov_start": 95, "fov_end": 55 + (1 - intensity) * 10}
@@ -248,14 +250,22 @@ def build(project: Path, aspect: str, target_fps: int,
             # v0.3: content-aware target_yaw from sphere_score (if available).
             # `prefer` switches based on event type — drops want motion (where
             # the crowd is going off); breakdowns want brightness (lights/lasers).
+            #
+            # Critical: sphere_score frames are SOURCE-LOCAL (1 fps into the
+            # original Insta360 file). Query with src_in, not master_t.
+            # Match the right source by finfo["path"] so multi-Insta360 setups
+            # don't always read from source_index=0.
             content_yaw = None
             if sphere_score is not None:
                 prefer = "motion" if event_type in ("drop", "peak") else \
                          "balanced" if event_type == "breakdown" else \
                          "motion+brightness"
                 content_yaw = sphere_lib.best_yaw_at(
-                    sphere_score, master_t=c0, prefer=prefer,
-                    smooth_window=3, source_index=0,
+                    sphere_score,
+                    source_t=src_in,
+                    source_path=finfo.get("path"),
+                    prefer=prefer,
+                    smooth_window=3,
                 )
 
             # Generate a per-clip .cmd file (Tier A + B math + v0.3 content-aware yaw)
