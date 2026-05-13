@@ -127,6 +127,19 @@ with open(out, 'w') as f:
         "$VENV_PY" "$DJ_EDIT_ROOT/bin/score-shots.py" --project "$proj" "$@"
         ;;
 
+    score-360)
+        # content-aware Insta360 scoring (v0.3+). Skip gracefully if script
+        # not yet installed (e.g. user upgraded to v0.2.1 dispatcher but the
+        # v0.3 score-360.py implementation hasn't landed yet).
+        proj="${1:-}"; shift || true
+        [ -z "$proj" ] && usage
+        if [ ! -f "$DJ_EDIT_ROOT/bin/score-360.py" ]; then
+            echo "[score-360] not installed (v0.3+ feature); skipping" >&2
+            exit 0
+        fi
+        "$VENV_PY" "$DJ_EDIT_ROOT/bin/score-360.py" --project "$proj" "$@"
+        ;;
+
     edl)
         proj="${1:-}"; shift || true
         [ -z "$proj" ] && usage
@@ -227,6 +240,21 @@ if clip_paths:
 if failures:
     print(f"[deliver] WARN: {len(failures)} drop clips failed to extract", file=sys.stderr)
 PY
+        # Show user where the output is — auto-open the folder
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  DONE — your videos are at:"
+        echo "  $proj/out/"
+        echo "═══════════════════════════════════════════════════════════════"
+        case "$(uname -s)" in
+            Darwin) open "$proj/out/" 2>/dev/null || true ;;
+            Linux)
+                # Only attempt xdg-open if a display is available; otherwise it hangs/errors.
+                if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$proj/out/" >/dev/null 2>&1 &
+                fi
+                ;;
+        esac
         ;;
 
     run)
@@ -240,10 +268,26 @@ PY
         bash "$0" hook "$proj" || echo "(no hook chosen)" >&2
         echo "[run] score..." >&2
         bash "$0" score "$proj"
+        echo "[run] score-360 (Insta360 content awareness)..." >&2
+        bash "$0" score-360 "$proj" || echo "(no insta360 or score-360 skipped)" >&2
         echo "[run] edl..." >&2
         bash "$0" edl "$proj"
         echo "[run] deliver..." >&2
         bash "$0" deliver "$proj"
+        # Show friend where the output is — auto-open the folder
+        echo ""
+        echo "═══════════════════════════════════════════════════════════════"
+        echo "  DONE — your videos are at:"
+        echo "  $proj/out/"
+        echo "═══════════════════════════════════════════════════════════════"
+        case "$(uname -s)" in
+            Darwin) open "$proj/out/" 2>/dev/null || true ;;
+            Linux)
+                if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open >/dev/null 2>&1; then
+                    xdg-open "$proj/out/" >/dev/null 2>&1 &
+                fi
+                ;;
+        esac
         ;;
 
     preview)
