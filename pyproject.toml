@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dj-edit"
-version = "0.2.1"
+version = "0.3.0"
 description = "Auto-edit DJ-set videos. Detects drops, builds, breakdowns from a master audio track and produces 9:16 + 16:9 cuts with virtual-camera reframing and beat-snapped edits."
 readme = "README.md"
 license = { text = "MIT" }
