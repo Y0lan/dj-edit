@@ -1,14 +1,27 @@
 # Changelog
 
+All notable changes to dj-edit are documented here.
+
 ## [0.2.1] — 2026-05-13
 
-auto-open output folder after run + deliver — friend was lost without it
+Third friend-feedback patch. He ran `dj-edit run` on his real footage and
+texted "can't find where the final video is."
 
-### Changed
-- (auto-generated — edit before publishing if needed)
+### Fixed
+- **`dj-edit run` and `dj-edit deliver` now auto-open the output folder
+  when done.** Previously only `dj-edit quickstart` did this. Both
+  commands now print the location + `open out/` on macOS (and `xdg-open`
+  on Linux only when a display is attached, to avoid hanging headless).
+- **`dj-edit score-360` subcommand placeholder** — v0.3+ will ship a real
+  implementation (content-aware Insta360 yaw scoring). v0.2.1 dispatcher
+  handles "script not yet installed" gracefully so the `run` chain can
+  evolve in v0.3 without breaking v0.2.x users.
 
+### Upgrade
 
-All notable changes to dj-edit are documented here.
+```
+brew upgrade dj-edit
+```
 
 ## [0.2.0] — 2026-05-12
 
